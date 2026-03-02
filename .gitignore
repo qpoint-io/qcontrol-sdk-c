@@ -4,6 +4,10 @@
 *.dylib
 *.a
 
+# Example build outputs
+/examples/**/dist/
+/examples/**/sdk/
+
 # IDE
 .vscode/
 .idea/
