@@ -11,6 +11,8 @@ Example plugins demonstrating the qcontrol C SDK for file operation filtering.
 | byte-counter | Counts bytes read/written per file |
 | content-filter | Redacts sensitive data in `.txt`/`.log` files |
 | text-transform | Transforms text based on file extension |
+| exec-logger | Logs all exec operations (v1 - not yet implemented) |
+| net-logger | Logs all network operations (v1 - not yet implemented) |
 
 ## Building
 
