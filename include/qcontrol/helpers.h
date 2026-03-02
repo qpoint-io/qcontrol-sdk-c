@@ -11,6 +11,8 @@
 
 #include "common.h"
 #include "file.h"
+#include "exec.h"
+#include "net.h"
 #include "plugin.h"
 
 #ifdef __cplusplus
@@ -82,6 +84,38 @@ extern "C" {
  */
 #define QCONTROL_FILE_SESSION(sess) \
     ((qcontrol_file_action_t){ .type = QCONTROL_FILE_ACTION_SESSION, .session = (sess) })
+
+/* ============================================================================
+ * Exec Action Macros
+ * ============================================================================ */
+
+/**
+ * Create a SESSION action for exec interception.
+ *
+ * Example:
+ * @code
+ * qcontrol_exec_session_t session = { .state = my_state, .args = &args_cfg };
+ * return QCONTROL_EXEC_SESSION(session);
+ * @endcode
+ */
+#define QCONTROL_EXEC_SESSION(sess) \
+    ((qcontrol_exec_action_t){ .type = QCONTROL_EXEC_ACTION_SESSION, .session = (sess) })
+
+/* ============================================================================
+ * Network Action Macros
+ * ============================================================================ */
+
+/**
+ * Create a SESSION action for network interception.
+ *
+ * Example:
+ * @code
+ * qcontrol_net_session_t session = { .state = my_state };
+ * return QCONTROL_NET_SESSION(session);
+ * @endcode
+ */
+#define QCONTROL_NET_SESSION(sess) \
+    ((qcontrol_net_action_t){ .type = QCONTROL_NET_ACTION_SESSION, .session = (sess) })
 
 #ifdef __cplusplus
 }

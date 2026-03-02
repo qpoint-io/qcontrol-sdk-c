@@ -48,6 +48,8 @@
 
 #include "qcontrol/common.h"
 #include "qcontrol/file.h"
+#include "qcontrol/exec.h"
+#include "qcontrol/net.h"
 #include "qcontrol/plugin.h"
 
 #endif /* QCONTROL_H */
