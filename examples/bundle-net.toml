@@ -1,0 +1,8 @@
+[bundle]
+output = "c-net-plugins.so"
+
+[[plugins]]
+source = "./net-logger"
+
+[[plugins]]
+source = "./net-transform"

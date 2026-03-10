@@ -5,8 +5,9 @@
 # Clean:   make clean
 
 NAME := exec-logger
-ARCH := $(shell uname -m)-$(shell uname -s | tr A-Z a-z)
+ARCH := $(shell uname -m | sed 's/^arm64$$/aarch64/')-$(shell uname -s | tr A-Z a-z | sed 's/^darwin$$/macos/')
 DIST := dist
+SHLIB_EXT := $(if $(filter Darwin,$(shell uname -s)),dylib,so)
 
 CC ?= gcc
 CFLAGS_SHARED := -shared -fPIC -Wall -Wextra
@@ -40,7 +41,7 @@ sdk:
 
 build: sdk
 	@mkdir -p $(DIST)
-	$(CC) $(CFLAGS_SHARED) -o $(DIST)/$(NAME)-$(ARCH).so $(SRC) $(INCLUDES) $(LIBS)
+	$(CC) $(CFLAGS_SHARED) -o $(DIST)/$(NAME)-$(ARCH).$(SHLIB_EXT) $(SRC) $(INCLUDES) $(LIBS)
 
 dist: sdk
 	@mkdir -p $(DIST)

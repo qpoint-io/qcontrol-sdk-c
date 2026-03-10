@@ -6,8 +6,10 @@
  * operations. It uses the descriptor-based plugin model to register
  * callbacks for connect, accept, TLS, domain, protocol, send, recv, and close.
  *
- * NOTE: Network hooks are not yet implemented in the agent, so this plugin
- * will compile but the callbacks won't be invoked at runtime.
+ * This plugin is useful with `qcontrol wrap`, where wrapped HTTP and HTTPS
+ * traffic is normalized into the network ABI and routed through these
+ * callbacks. Native agent-side net hooks are still under development, but the
+ * current implementation already exercises the same plugin-facing ABI.
  *
  * Environment variables:
  *   QCONTROL_LOG_FILE - Path to log file (default: /tmp/qcontrol.log)
@@ -17,7 +19,8 @@
  *   make dist    # Build object file for bundling
  *
  * Usage:
- *   QCONTROL_PLUGINS=./dist/net-logger-<arch>.so qcontrol wrap -- ./target
+ *   qcontrol bundle --plugins ./net-logger -o net-logger-demo.so
+ *   qcontrol wrap --bundle ./net-logger-demo.so -- ./target
  */
 
 #include <qcontrol.h>
@@ -25,6 +28,8 @@
 #include <qcontrol/log.h>
 
 QCONTROL_LOGGER(logger);
+
+static unsigned char tracked_state = 0;
 
 /**
  * Log outbound connect() operations.
@@ -38,7 +43,7 @@ static qcontrol_net_action_t on_net_connect(qcontrol_net_connect_event_t* ev) {
                 ev->src_addr, ev->src_port);
     }
 
-    return QCONTROL_NET_PASS;
+    return QCONTROL_NET_STATE(&tracked_state);
 }
 
 /**
@@ -47,7 +52,7 @@ static qcontrol_net_action_t on_net_connect(qcontrol_net_connect_event_t* ev) {
 static qcontrol_net_action_t on_net_accept(qcontrol_net_accept_event_t* ev) {
     qcontrol_log(&logger, "[net_logger] accept(fd=%d, listen_fd=%d, src=%s:%u) = %d\n",
             ev->fd, ev->listen_fd, ev->src_addr, ev->src_port, ev->result);
-    return QCONTROL_NET_PASS;
+    return QCONTROL_NET_STATE(&tracked_state);
 }
 
 /**
