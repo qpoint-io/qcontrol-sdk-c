@@ -1,6 +1,6 @@
 # C SDK Examples
 
-Example plugins demonstrating the qcontrol C SDK for file operation filtering.
+Example plugins demonstrating the qcontrol C SDK for file, exec, and network interception.
 
 ## Plugins
 
@@ -12,7 +12,8 @@ Example plugins demonstrating the qcontrol C SDK for file operation filtering.
 | content-filter | Redacts sensitive data in `.txt`/`.log` files |
 | text-transform | Transforms text based on file extension |
 | exec-logger | Logs all exec operations (v1 - not yet implemented) |
-| net-logger | Logs all network operations (v1 - not yet implemented) |
+| net-logger | Logs network I/O like connect/tls/send/recv/close |
+| net-transform | Rewrites plaintext network traffic with declarative recv transforms |
 
 ## Quick Start
 
@@ -21,15 +22,32 @@ make                  # Build all plugins into c-plugins.so
 qcontrol wrap --bundle ./c-plugins.so -- ./your-app
 ```
 
+Type-specific shortcuts are also available:
+
+```bash
+make bundle-file      # c-file-plugins.so
+make bundle-exec      # c-exec-plugins.so
+make bundle-net       # c-net-plugins.so
+
+make build-file       # shared libraries for file plugins
+make build-exec       # shared libraries for exec plugins
+make build-net        # shared libraries for net plugins
+```
+
 ## Demo: Zero-Trust Governance
 
 Use qcontrol to build unbreakable system-level guardrails for *any* application—from standard Linux utilities to autonomous AI coding agents.
 
 Instead of relying on application logic or API restrictions, qcontrol intercepts system calls at the OS level to guarantee compliance without modifying the target binary.
 
-**1. Start the Dev Environment**
+**1. Install qcontrol or Start the Dev Environment**
 
-We have pre-configured a development container with the SDK, compiler toolchain, and Anthropic's Claude Code AI assistant installed.
+Option A: install `qcontrol` directly:
+```bash
+curl -s https://get.qpoint.io/qcontrol/demo | sh
+```
+
+Option B: start the pre-configured development environment with the SDK, compiler toolchain, and Anthropic's Claude Code AI assistant installed:
 ```bash
 make dev
 ```
@@ -93,6 +111,46 @@ qcontrol wrap --bundle ./c-plugins.so -- ./test-file-ops.sh
 cat /tmp/qcontrol.log
 ```
 
+### Network Demo
+
+Bundle the network logger example and make an HTTPS request through `wrap`:
+
+```bash
+qcontrol bundle --plugins ./net-logger -o ./net-logger-demo.so
+qcontrol wrap --bundle ./net-logger-demo.so -- ./test-net-io.sh https://example.com/
+```
+
+Then inspect the log:
+
+```bash
+grep net_logger /tmp/qcontrol.log
+```
+
+You should see entries for `connect`, `domain`, `protocol`, `send`, `recv`, and `close`. HTTPS requests should also emit a `tls` line once the network layer identifies a local TLS session.
+
+### Network Transform Demo
+
+Bundle the transform example and run it against a local HTTP server:
+
+```bash
+qcontrol bundle --plugins ./net-transform -o ./net-transform-demo.so
+qcontrol wrap --bundle ./net-transform-demo.so -- ./test-net-transform.sh
+```
+
+You should see the body rewritten from:
+
+```text
+hello from demo server
+```
+
+to:
+
+```text
+hullo from demo client
+```
+
+This example uses `recv_config.replace` to demonstrate that net plugins can modify plaintext application data before it reaches the client. The demo intentionally uses same-length replacements so plain HTTP `Content-Length` remains valid without protocol-aware header rewriting.
+
 ## Writing Plugins
 
 See [file-logger/src/plugin.c](file-logger/src/plugin.c) for a complete example.
@@ -113,19 +171,16 @@ QCONTROL_PLUGIN("my_plugin",
 
 Build: `gcc -shared -fPIC -o plugin.so plugin.c -I../../include`
 
-## Advanced: Dynamic Loading
+## Advanced: Bundling Individual Plugins
 
-For development or when you need to load individual plugins without bundling:
+For development, you can bundle just the plugins you want without writing a `bundle.toml` file:
 
 ```bash
-# Build shared libraries
-make build
+# Bundle one plugin
+qcontrol bundle --plugins ./file-logger -o ./file-logger.so
+qcontrol wrap --bundle ./file-logger.so -- ls -la
 
-# Load plugins dynamically (arch-specific paths)
-QCONTROL_PLUGINS=./file-logger/dist/file-logger-$(uname -m)-$(uname -s | tr A-Z a-z).so \
-  qcontrol wrap -- ls -la
-
-# Multiple plugins (comma-separated)
-QCONTROL_PLUGINS=./file-logger/dist/file-logger-$(uname -m)-$(uname -s | tr A-Z a-z).so,./access-control/dist/access-control-$(uname -m)-$(uname -s | tr A-Z a-z).so \
-  qcontrol wrap -- cat /tmp/secret_test.txt
+# Bundle multiple plugins
+qcontrol bundle --plugins ./file-logger,./access-control -o ./file-tools.so
+qcontrol wrap --bundle ./file-tools.so -- cat /tmp/secret_test.txt
 ```

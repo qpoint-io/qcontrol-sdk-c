@@ -57,11 +57,11 @@ const qcontrol_plugin_t qcontrol_plugin = {
 };
 ```
 
-Build and run:
+Bundle and run from a plugin directory using the Makefile pattern shown in [Building Plugins](#building-plugins):
 
 ```bash
-cc -shared -fPIC -o libhello_plugin.so hello_plugin.c -I/path/to/sdk/include
-qcontrol wrap --plugins ./libhello_plugin.so -- cat /etc/passwd
+qcontrol bundle --plugins ./my-plugin -o hello-plugin-bundle.so
+qcontrol wrap --bundle ./hello-plugin-bundle.so -- cat /etc/passwd
 ```
 
 That's it. Your plugin now intercepts every file open in the wrapped process.
@@ -185,6 +185,7 @@ static qcontrol_file_action_t on_file_open(qcontrol_file_open_event_t* ev) {
 | [text-transform](examples/text-transform/) | Uppercases all file reads | Custom transform functions |
 | [exec-logger](examples/exec-logger/) | Logs process spawns and exits | Exec API |
 | [net-logger](examples/net-logger/) | Logs network connections and traffic | Network API |
+| [net-transform](examples/net-transform/) | Rewrites plaintext network traffic | Network transform configuration |
 
 ## File Operations
 
@@ -194,7 +195,7 @@ File operations are fully implemented. Use these to observe, block, or transform
 
 | Callback | Signature | Phase | Purpose |
 |----------|-----------|-------|---------|
-| `on_file_open` | `qcontrol_file_action_t (*)(qcontrol_file_open_event_t*)` | After open() | Decide interception |
+| `on_file_open` | `qcontrol_file_action_t (*)(qcontrol_file_open_event_t*)` | After open()/openat() | Decide interception |
 | `on_file_read` | `qcontrol_file_action_t (*)(void*, qcontrol_file_read_event_t*)` | After read() | Observe or block |
 | `on_file_write` | `qcontrol_file_action_t (*)(void*, qcontrol_file_write_event_t*)` | Before write() | Observe or block |
 | `on_file_close` | `void (*)(void*, qcontrol_file_close_event_t*)` | After close() | Cleanup state |
@@ -492,7 +493,7 @@ static qcontrol_exec_action_t on_exec(qcontrol_exec_event_t* ev) {
 
 ## Network Operations
 
-> **Note:** Agent support coming soon. The SDK is stable, so you can write plugins now.
+> **Note:** Proxy-backed wrap mode already exercises this ABI today. Native agent-side network hooks are still coming.
 
 ### Callbacks
 
@@ -746,68 +747,46 @@ Output locations:
 - Shared library: `libmy_plugin.so`
 - Object file: `my_plugin.o`
 
-### Using Plugins
+### Using Bundles
 
-Load plugins dynamically via `QCONTROL_PLUGINS`:
-
-```bash
-# Single plugin
-QCONTROL_PLUGINS=./libmy_plugin.so qcontrol wrap -- ./target
-
-# Multiple plugins (comma-separated)
-QCONTROL_PLUGINS=./logger.so,./blocker.so qcontrol wrap -- ./target
-```
-
-Or with the `--plugins` flag:
+Bundle plugins directly from plugin directories:
 
 ```bash
-qcontrol wrap --plugins ./libmy_plugin.so -- ./target
+qcontrol bundle --plugins ./my-plugin -o my-plugin-bundle.so
+qcontrol wrap --bundle ./my-plugin-bundle.so -- ./target
+
+# Multiple plugins
+qcontrol bundle --plugins ./logger,./blocker -o my-plugins.so
+qcontrol wrap --bundle ./my-plugins.so -- ./target
 ```
 
 ## Bundling Plugins
 
 For distribution, bundle plugins with the agent core into a single `.so` file.
 
-### Bundle Configuration
+### Creating a Bundle
 
-Create a `bundle.toml` file:
+Create the bundle directly from plugin directories:
+
+```bash
+qcontrol bundle --plugins ./file-logger,./access-control -o my-bundle.so
+```
+
+You can also pass prebuilt object files, or use a `bundle.toml` file when you want to describe larger bundles declaratively:
 
 ```toml
 [bundle]
 output = "my-plugins.so"
 
 [[plugins]]
-source = "./file-logger"    # Plugin directory (auto-builds)
+source = "./file-logger"
 
 [[plugins]]
 source = "./access-control"
-
-[[plugins]]
-source = "./content-filter"
 ```
-
-### Creating a Bundle
-
-1. Build plugins as object files:
-
-```bash
-# Build all plugins
-make -C examples
-
-# Or build individual plugin
-cc -c -fPIC -o my_plugin.o my_plugin.c -I/path/to/sdk/include
-```
-
-2. Create the bundle:
 
 ```bash
 qcontrol bundle --config bundle.toml
-```
-
-Or manually with object files:
-
-```bash
-qcontrol bundle --plugins plugin1.o,plugin2.o -o my-bundle.so
 ```
 
 ### Using Bundles

@@ -1,10 +1,10 @@
-# text-transform plugin Makefile
+# net-transform plugin Makefile
 #
 # Build:   make build  (shared library for dynamic loading)
 # Dist:    make dist   (object file for bundling)
 # Clean:   make clean
 
-NAME := text-transform
+NAME := net-transform
 ARCH := $(shell uname -m | sed 's/^arm64$$/aarch64/')-$(shell uname -s | tr A-Z a-z | sed 's/^darwin$$/macos/')
 DIST := dist
 SHLIB_EXT := $(if $(filter Darwin,$(shell uname -s)),dylib,so)
@@ -13,7 +13,6 @@ CC ?= gcc
 CFLAGS_SHARED := -shared -fPIC -Wall -Wextra
 CFLAGS_OBJECT := -c -fPIC -Wall -Wextra
 
-# SDK dependency
 SDK_REPO ?= https://github.com/qpoint-io/qcontrol-sdk-c
 SDK_REF ?= main
 SDK_DIR := sdk
@@ -28,7 +27,6 @@ SRC := src/plugin.c
 
 all: build
 
-# Use local SDK if available, otherwise fetch from GitHub
 sdk:
 	@if [ -f "$(LOCAL_SDK)/qcontrol.h" ]; then \
 		rm -rf $(SDK_DIR); \
