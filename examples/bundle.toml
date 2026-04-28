@@ -24,3 +24,9 @@ source = "./net-logger"
 
 [[plugins]]
 source = "./net-transform"
+
+[[plugins]]
+source = "./http-logger"
+
+[[plugins]]
+source = "./http-rewrite"

@@ -1,6 +1,7 @@
 # C SDK Examples
 
-Example plugins demonstrating the qcontrol C SDK for file, exec, and network interception.
+Example plugins demonstrating the qcontrol C SDK for file, exec, network, and
+HTTP interception.
 
 ## Plugins
 
@@ -14,6 +15,8 @@ Example plugins demonstrating the qcontrol C SDK for file, exec, and network int
 | exec-logger | Logs all exec operations (v1 - not yet implemented) |
 | net-logger | Logs network I/O like connect/tls/send/recv/close |
 | net-transform | Rewrites plaintext network traffic with declarative recv transforms |
+| http-logger | Logs structured HTTP request/response lifecycle events |
+| http-rewrite | Rewrites one JSON response body with buffered-body scheduling |
 
 ## Quick Start
 
@@ -28,10 +31,12 @@ Type-specific shortcuts are also available:
 make bundle-file      # c-file-plugins.so
 make bundle-exec      # c-exec-plugins.so
 make bundle-net       # c-net-plugins.so
+make bundle-http      # c-http-plugins.so
 
 make build-file       # shared libraries for file plugins
 make build-exec       # shared libraries for exec plugins
 make build-net        # shared libraries for net plugins
+make build-http       # shared libraries for HTTP plugins
 ```
 
 ## Demo: Zero-Trust Governance
@@ -150,6 +155,33 @@ hullo from demo client
 ```
 
 This example uses `recv_config.replace` to demonstrate that net plugins can modify plaintext application data before it reaches the client. The demo intentionally uses same-length replacements so plain HTTP `Content-Length` remains valid without protocol-aware header rewriting.
+
+### HTTP Rewrite Example
+
+The `http-rewrite` example demonstrates the structured HTTP mutation ABI from
+the C SDK:
+
+```c
+return QCONTROL_HTTP_BUFFER(QCONTROL_HTTP_PASS);
+```
+
+That response callback requests buffered-body scheduling early, so the later
+body callback can replace the full logical response body:
+
+```c
+qcontrol_buffer_set(ev->body, replacement, sizeof(replacement) - 1);
+```
+
+The example also demonstrates request/response header mutation through the
+host-backed HTTP head handles:
+
+```c
+QCONTROL_HTTP_HEADER_SET(headers, "content-type", "application/json");
+QCONTROL_HTTP_HEADER_REMOVE(headers, "proxy-connection");
+```
+
+The host remains responsible for framing metadata such as `Content-Length` and
+`Transfer-Encoding` when the plugin replaces the body.
 
 ## Writing Plugins
 
