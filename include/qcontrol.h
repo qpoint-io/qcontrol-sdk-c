@@ -34,13 +34,6 @@
  * @code
  * QCONTROL_PLUGINS=./plugin1.so,./plugin2.so qcontrol wrap -- ./target
  * @endcode
- *
- * Or bundle plugins into the agent for distribution:
- *
- * @code
- * qcontrol bundle --config bundle.toml -o my-bundle.so
- * qcontrol wrap --bundle my-bundle.so -- ./target
- * @endcode
  */
 
 #ifndef QCONTROL_H
@@ -48,8 +41,6 @@
 
 #include "qcontrol/common.h"
 #include "qcontrol/file.h"
-#include "qcontrol/exec.h"
-#include "qcontrol/net.h"
 #include "qcontrol/plugin.h"
 
 #endif /* QCONTROL_H */

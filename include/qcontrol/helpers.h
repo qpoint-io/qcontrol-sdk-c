@@ -70,6 +70,50 @@ extern "C" {
     { (needle), sizeof(needle) - 1, (replacement), sizeof(replacement) - 1 }
 
 /* ============================================================================
+ * HTTP Helper Macros
+ * ============================================================================ */
+
+/**
+ * Apply buffered-body scheduling to one HTTP action.
+ *
+ * Example:
+ * @code
+ * return QCONTROL_HTTP_BUFFER(QCONTROL_HTTP_PASS);
+ * @endcode
+ */
+#define QCONTROL_HTTP_BUFFER(action) \
+    qcontrol_http_action_with_body_mode((action), QCONTROL_HTTP_BODY_MODE_BUFFER)
+
+/**
+ * Apply streaming-body scheduling to one HTTP action.
+ *
+ * Example:
+ * @code
+ * return QCONTROL_HTTP_STREAM(QCONTROL_HTTP_PASS);
+ * @endcode
+ */
+#define QCONTROL_HTTP_STREAM(action) \
+    qcontrol_http_action_with_body_mode((action), QCONTROL_HTTP_BODY_MODE_STREAM)
+
+/**
+ * Append one HTTP header from string literals.
+ */
+#define QCONTROL_HTTP_HEADER_ADD(headers, name, value) \
+    qcontrol_http_headers_add((headers), QCONTROL_STR(name), QCONTROL_STR(value))
+
+/**
+ * Replace one HTTP header from string literals.
+ */
+#define QCONTROL_HTTP_HEADER_SET(headers, name, value) \
+    qcontrol_http_headers_set((headers), QCONTROL_STR(name), QCONTROL_STR(value))
+
+/**
+ * Remove one HTTP header by name from a string literal.
+ */
+#define QCONTROL_HTTP_HEADER_REMOVE(headers, name) \
+    qcontrol_http_headers_remove((headers), QCONTROL_STR(name))
+
+/* ============================================================================
  * File Action Macros
  * ============================================================================ */
 

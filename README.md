@@ -6,7 +6,7 @@ Intercept. Observe. Transform. Build secure sandboxes for AI agents and control 
 
 **Overview:** [Introduction](#introduction) · [What Can You Build?](#what-can-you-build) · [Quick Start](#quick-start) · [Core Concepts](#core-concepts) · [Examples](#examples)
 
-**API Reference:** [File Operations](#file-operations) · [Exec Operations](#exec-operations) · [Network Operations](#network-operations)
+**API Reference:** [File Operations](#file-operations) · [Exec Operations](#exec-operations) · [Network Operations](#network-operations) · [HTTP Operations](#http-operations)
 
 **Development:** [Building Plugins](#building-plugins) · [Bundling Plugins](#bundling-plugins) · [Environment Variables](#environment-variables)
 
@@ -14,13 +14,14 @@ Intercept. Observe. Transform. Build secure sandboxes for AI agents and control 
 
 ## Introduction
 
-The Qcontrol C SDK lets you build plugins that hook directly into system calls, giving you precise control over how applications interact with files, processes, and the network.
+The Qcontrol C SDK lets you build plugins that hook directly into system calls and host-backed protocol surfaces, giving you precise control over how applications interact with files, processes, the network, and HTTP exchanges.
 
 This makes Qcontrol ideal for building **AI agent sandboxes and runtimes**. As agents gain autonomy to read files, execute commands, and make network requests, you need visibility and control at the syscall level. Qcontrol gives you that:
 
 - **Intercept file operations** — See every open, read, write, and close. Block access to sensitive paths or transform data as it flows through.
 - **Intercept exec operations** — Monitor process spawning, modify arguments, capture stdin/stdout/stderr.
 - **Intercept network operations** — Watch connections form, inspect send/recv traffic, detect TLS and protocols.
+- **Intercept HTTP operations** — Inspect normalized request/response metadata, edit headers inline, and rewrite buffered bodies through host-backed HTTP callbacks.
 
 Your plugins run inside the target process via native function hooking. Observe silently, block operations, or transform data in transit. No application changes required.
 
@@ -36,6 +37,7 @@ The SDK provides a clean C API with convenience macros for common patterns.
 | **Observability** | Trace all I/O, log syscalls, build audit trails, count bytes | [file-logger](examples/file-logger/), [byte-counter](examples/byte-counter/) |
 | **Compliance** | Redact PII from output, mask credentials, filter sensitive data | [content-filter](examples/content-filter/) |
 | **Development** | Mock file systems, inject test data, transform formats on the fly | [text-transform](examples/text-transform/) |
+| **HTTP Governance** | Observe exchanges, normalize headers, rewrite API responses inline | [http-logger](examples/http-logger/), [http-rewrite](examples/http-rewrite/) |
 
 ## Quick Start
 
@@ -70,13 +72,14 @@ That's it. Your plugin now intercepts every file open in the wrapped process.
 
 ### Hooks
 
-Qcontrol intercepts operations at three levels:
+Qcontrol intercepts operations at four levels:
 
 | Domain | Operations | Status |
 |--------|------------|--------|
 | **File** | open, read, write, close | Fully implemented |
 | **Exec** | spawn, stdin, stdout, stderr, exit | SDK ready, agent coming soon |
 | **Network** | connect, accept, send, recv, close | SDK ready, agent coming soon |
+| **HTTP** | request, request body, request trailers, request done, response, response body, response trailers, response done, exchange close | Proxy-backed wrap mode available today |
 
 ### Actions
 
@@ -186,6 +189,8 @@ static qcontrol_file_action_t on_file_open(qcontrol_file_open_event_t* ev) {
 | [exec-logger](examples/exec-logger/) | Logs process spawns and exits | Exec API |
 | [net-logger](examples/net-logger/) | Logs network connections and traffic | Network API |
 | [net-transform](examples/net-transform/) | Rewrites plaintext network traffic | Network transform configuration |
+| [http-logger](examples/http-logger/) | Logs structured HTTP exchange lifecycle events | HTTP callbacks, per-exchange state |
+| [http-rewrite](examples/http-rewrite/) | Rewrites JSON responses with inline head/body edits | Buffered body scheduling, mutable headers |
 
 ## File Operations
 
@@ -648,6 +653,187 @@ The `qcontrol_net_ctx_t` type in transform functions provides connection metadat
 | `protocol` | `const char*` | Protocol (may be NULL) |
 | `protocol_len` | `size_t` | Length of protocol |
 
+## HTTP Operations
+
+> **Note:** HTTP-aware hosts emit this ABI directly today. Inline request/response edits are host-backed, so mutable head/body handles may be `NULL` when a host only supports observation.
+
+### Callbacks
+
+| Callback | Signature | Phase | Purpose |
+|----------|-----------|-------|---------|
+| `on_http_request` | `qcontrol_http_action_t (*)(qcontrol_http_request_event_t*)` | Request start | Observe, block, attach exchange state, choose request body scheduling |
+| `on_http_request_body` | `qcontrol_http_action_t (*)(void*, qcontrol_http_body_event_t*)` | Request body | Observe or edit decoded request body |
+| `on_http_request_trailers` | `qcontrol_http_action_t (*)(void*, qcontrol_http_trailers_event_t*)` | Request trailers | Observe or edit request trailers |
+| `on_http_request_done` | `void (*)(void*, qcontrol_http_message_done_event_t*)` | Request completion | Bookkeeping after request body/trailers |
+| `on_http_response` | `qcontrol_http_action_t (*)(void*, qcontrol_http_response_event_t*)` | Response start | Observe, block, edit response head, choose response body scheduling |
+| `on_http_response_body` | `qcontrol_http_action_t (*)(void*, qcontrol_http_body_event_t*)` | Response body | Observe or edit decoded response body |
+| `on_http_response_trailers` | `qcontrol_http_action_t (*)(void*, qcontrol_http_trailers_event_t*)` | Response trailers | Observe or edit response trailers |
+| `on_http_response_done` | `void (*)(void*, qcontrol_http_message_done_event_t*)` | Response completion | Bookkeeping after response body/trailers |
+| `on_http_exchange_close` | `void (*)(void*, qcontrol_http_exchange_close_event_t*)` | Exchange close | Final cleanup for tracked exchange state |
+
+The `void*` state parameter is your custom per-exchange state returned from `on_http_request` or `on_http_response`.
+
+### Events
+
+**qcontrol_http_request_event_t** — passed to `on_http_request`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ctx` | `qcontrol_http_ctx_t` | Exchange context, including `exchange_id`, `stream_id`, HTTP version, and underlying `qcontrol_net_ctx_t` snapshot |
+| `raw_target` | `const char*` | Raw request-target as seen on the wire |
+| `raw_target_len` | `size_t` | Length of raw target |
+| `method` | `const char*` | Normalized request method |
+| `method_len` | `size_t` | Length of method |
+| `scheme` | `const char*` | Normalized request scheme, or `NULL` if unavailable |
+| `scheme_len` | `size_t` | Length of scheme |
+| `authority` | `const char*` | Normalized request authority, or `NULL` if unavailable |
+| `authority_len` | `size_t` | Length of authority |
+| `path` | `const char*` | Normalized request path |
+| `path_len` | `size_t` | Length of path |
+| `headers` | `const qcontrol_http_header_t*` | Runtime-owned request header array |
+| `header_count` | `size_t` | Number of request headers |
+| `head` | `qcontrol_http_request_head_t*` | Mutable request head handle for inline edits, or `NULL` |
+
+**qcontrol_http_response_event_t** — passed to `on_http_response`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ctx` | `qcontrol_http_ctx_t` | Exchange context |
+| `status_code` | `uint16_t` | Response status code |
+| `reason` | `const char*` | Reason phrase, or `NULL` if unavailable |
+| `reason_len` | `size_t` | Length of reason phrase |
+| `headers` | `const qcontrol_http_header_t*` | Runtime-owned response header array |
+| `header_count` | `size_t` | Number of response headers |
+| `head` | `qcontrol_http_response_head_t*` | Mutable response head handle for inline edits, or `NULL` |
+
+**qcontrol_http_body_event_t** — passed to request/response body callbacks:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ctx` | `qcontrol_http_ctx_t` | Exchange context |
+| `kind` | `qcontrol_http_message_kind_t` | `QCONTROL_HTTP_MESSAGE_REQUEST` or `QCONTROL_HTTP_MESSAGE_RESPONSE` |
+| `bytes` | `const char*` | Read-only decoded input bytes for this callback |
+| `bytes_len` | `size_t` | Length of `bytes` |
+| `body` | `qcontrol_buffer_t*` | Mutable output buffer for host-backed body edits, or `NULL` |
+| `offset` | `uint64_t` | Decoded body offset within the current message |
+| `flags` | `uint32_t` | `qcontrol_http_body_flag_t` bitset |
+| `end_of_stream` | `int` | Non-zero on the terminal body callback for this message |
+
+**qcontrol_http_trailers_event_t** — passed to request/response trailers callbacks:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ctx` | `qcontrol_http_ctx_t` | Exchange context |
+| `kind` | `qcontrol_http_message_kind_t` | Request or response trailers |
+| `headers` | `const qcontrol_http_header_t*` | Runtime-owned trailer array |
+| `header_count` | `size_t` | Number of trailers |
+| `header_block` | `qcontrol_http_headers_t*` | Mutable trailer block for host-backed edits, or `NULL` |
+
+**qcontrol_http_message_done_event_t** — passed to request/response done callbacks:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ctx` | `qcontrol_http_ctx_t` | Exchange context |
+| `kind` | `qcontrol_http_message_kind_t` | Completed request or response |
+| `body_bytes` | `uint64_t` | Total decoded body bytes observed for the completed message |
+
+**qcontrol_http_exchange_close_event_t** — passed to `on_http_exchange_close`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ctx` | `qcontrol_http_ctx_t` | Exchange context |
+| `reason` | `qcontrol_http_close_reason_t` | Terminal close reason |
+| `flags` | `uint32_t` | `qcontrol_http_exchange_flag_t` bitset indicating which done callbacks ran |
+
+### Actions
+
+**Action macros** — return from HTTP callbacks:
+
+| Macro | Description |
+|-------|-------------|
+| `QCONTROL_HTTP_PASS` | No interception, continue normally |
+| `QCONTROL_HTTP_BLOCK` | Block the exchange |
+| `QCONTROL_HTTP_STATE(ptr)` | Track per-exchange state only |
+| `QCONTROL_HTTP_BUFFER(action)` | Request buffered decoded body delivery for this request or response |
+| `QCONTROL_HTTP_STREAM(action)` | Request incremental decoded body delivery for this request or response |
+
+### Inline Head And Body Edits
+
+Use the mutable request/response head handles to edit normalized HTTP metadata when the host provides them:
+
+```c
+static qcontrol_http_action_t on_http_request(qcontrol_http_request_event_t* ev) {
+    qcontrol_http_headers_t* headers = NULL;
+
+    if (ev->head != NULL) {
+        qcontrol_http_request_set_path(ev->head, QCONTROL_STR("/v2/profile"));
+        headers = qcontrol_http_request_headers(ev->head);
+        if (headers != NULL) {
+            QCONTROL_HTTP_HEADER_REMOVE(headers, "proxy-connection");
+            QCONTROL_HTTP_HEADER_SET(headers, "x-qcontrol", "1");
+        }
+    }
+
+    return QCONTROL_HTTP_PASS;
+}
+```
+
+Response callbacks can request buffered scheduling early and then replace the final logical body in the later body callback:
+
+```c
+static qcontrol_http_action_t on_http_response(void* state, qcontrol_http_response_event_t* ev) {
+    (void)state;
+    (void)ev;
+    return QCONTROL_HTTP_BUFFER(QCONTROL_HTTP_PASS);
+}
+
+static qcontrol_http_action_t on_http_response_body(void* state, qcontrol_http_body_event_t* ev) {
+    static const char replacement[] = "{\"rewritten\":true}";
+    (void)state;
+
+    if (ev->end_of_stream && ev->body != NULL) {
+        qcontrol_buffer_set(ev->body, replacement, sizeof(replacement) - 1);
+    }
+    return QCONTROL_HTTP_PASS;
+}
+```
+
+Available request head accessors and setters:
+
+| API | Description |
+|-----|-------------|
+| `qcontrol_http_request_headers(head)` | Mutable request headers handle |
+| `qcontrol_http_request_raw_target(head)` / `_len(head)` | Current raw target |
+| `qcontrol_http_request_method(head)` / `_len(head)` | Current method |
+| `qcontrol_http_request_set_method(head, value, value_len)` | Replace method |
+| `qcontrol_http_request_scheme(head)` / `_len(head)` | Current scheme |
+| `qcontrol_http_request_set_scheme(head, value, value_len)` | Replace scheme |
+| `qcontrol_http_request_authority(head)` / `_len(head)` | Current authority |
+| `qcontrol_http_request_set_authority(head, value, value_len)` | Replace authority |
+| `qcontrol_http_request_path(head)` / `_len(head)` | Current path |
+| `qcontrol_http_request_set_path(head, value, value_len)` | Replace path |
+
+Available response head accessors and setters:
+
+| API | Description |
+|-----|-------------|
+| `qcontrol_http_response_headers(head)` | Mutable response headers handle |
+| `qcontrol_http_response_status_code(head)` | Current status code |
+| `qcontrol_http_response_set_status_code(head, status_code)` | Replace status code |
+| `qcontrol_http_response_reason(head)` / `_len(head)` | Current reason phrase |
+| `qcontrol_http_response_set_reason(head, value, value_len)` | Replace reason phrase |
+| `qcontrol_http_headers_add(headers, name, name_len, value, value_len)` | Append a header |
+| `qcontrol_http_headers_set(headers, name, name_len, value, value_len)` | Replace all headers with a matching name |
+| `qcontrol_http_headers_remove(headers, name, name_len)` | Remove matching headers |
+
+The convenience macros in `<qcontrol/helpers.h>` wrap common literal-based edits:
+
+| Macro | Expands To |
+|-------|------------|
+| `QCONTROL_HTTP_HEADER_ADD(headers, name, value)` | `qcontrol_http_headers_add(...)` |
+| `QCONTROL_HTTP_HEADER_SET(headers, name, value)` | `qcontrol_http_headers_set(...)` |
+| `QCONTROL_HTTP_HEADER_REMOVE(headers, name)` | `qcontrol_http_headers_remove(...)` |
+
 ## Building Plugins
 
 ### Project Setup
@@ -728,6 +914,16 @@ const qcontrol_plugin_t qcontrol_plugin = {
     .on_net_send = NULL,
     .on_net_recv = NULL,
     .on_net_close = NULL,
+    // HTTP callbacks (optional)
+    .on_http_request = NULL,
+    .on_http_request_body = NULL,
+    .on_http_request_trailers = NULL,
+    .on_http_request_done = NULL,
+    .on_http_response = NULL,
+    .on_http_response_body = NULL,
+    .on_http_response_trailers = NULL,
+    .on_http_response_done = NULL,
+    .on_http_exchange_close = NULL,
 };
 ```
 
