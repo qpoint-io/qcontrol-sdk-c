@@ -22,6 +22,9 @@
 #include <stdint.h>
 #include <sys/types.h>
 
+#include "buffer.h"
+#include "process.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -47,6 +50,19 @@ typedef enum {
 } qcontrol_net_action_type_t;
 
 /**
+ * Action types returned by later net lifecycle callbacks once a connection
+ * session already exists.
+ */
+typedef enum {
+    /** Keep the tracked connection open */
+    QCONTROL_NET_PHASE_ACTION_PASS = 0,
+    /** Terminate the tracked connection with the default denied behavior */
+    QCONTROL_NET_PHASE_ACTION_BLOCK = 1,
+    /** Terminate the tracked connection with a specific errno */
+    QCONTROL_NET_PHASE_ACTION_BLOCK_ERRNO = 2,
+} qcontrol_net_phase_action_type_t;
+
+/**
  * Connection direction.
  */
 typedef enum {
@@ -55,6 +71,21 @@ typedef enum {
     /** Inbound connection (accept) */
     QCONTROL_NET_INBOUND = 1,
 } qcontrol_net_direction_t;
+
+/**
+ * Per-connection inspection mode.
+ *
+ * Hosts that can choose between raw tunneling and protocol interception use
+ * this mode to decide how one tracked connection should be handled.
+ */
+typedef enum {
+    /** Preserve the host's default handling for this connection */
+    QCONTROL_NET_INSPECTION_DEFAULT = 0,
+    /** Prefer raw tunneling without TLS interception */
+    QCONTROL_NET_INSPECTION_TUNNEL = 1,
+    /** Prefer active interception when the host can support it */
+    QCONTROL_NET_INSPECTION_INTERCEPT = 2,
+} qcontrol_net_inspection_mode_t;
 
 /* ============================================================================
  * Net Pattern Replacement
@@ -74,11 +105,11 @@ typedef struct {
  * Forward Declarations
  * ============================================================================ */
 
-typedef struct qcontrol_buffer qcontrol_buffer_t;
 typedef struct qcontrol_net_ctx qcontrol_net_ctx_t;
 typedef struct qcontrol_net_rw_config qcontrol_net_rw_config_t;
 typedef struct qcontrol_net_session qcontrol_net_session_t;
 typedef struct qcontrol_net_action qcontrol_net_action_t;
+typedef struct qcontrol_net_phase_action qcontrol_net_phase_action_t;
 
 /* ============================================================================
  * Net Transform Function Types
@@ -88,7 +119,7 @@ typedef struct qcontrol_net_action qcontrol_net_action_t;
  * Transform function - called during send/recv to modify buffer.
  *
  * @param state Plugin-defined state (from session)
- * @param ctx Net context (fd, addresses, tls, domain, protocol)
+ * @param ctx Net context (fd, addresses, tls, domain, protocol, process)
  * @param buf Buffer containing data to transform
  * @return Action indicating whether to continue or block
  */
@@ -161,6 +192,10 @@ struct qcontrol_net_rw_config {
 /**
  * Session configuration for a network connection.
  * Returned from on_net_connect/on_net_accept to configure I/O behavior.
+ *
+ * The returned state pointer is scoped to one logical connection session.
+ * Plugins remain responsible for synchronizing any shared mutable state that
+ * pointer references indirectly.
  */
 struct qcontrol_net_session {
     /** Plugin-defined state (opaque, plugin owns memory) */
@@ -173,6 +208,9 @@ struct qcontrol_net_session {
 
     /** Replace destination port (0 = no change) */
     uint16_t set_port;
+
+    /** Override tunnel versus interception handling when the host can decide */
+    qcontrol_net_inspection_mode_t inspection_mode;
 
     /* === I/O TRANSFORM CONFIGS === */
 
@@ -198,6 +236,18 @@ struct qcontrol_net_action {
     };
 };
 
+/**
+ * Action result returned from later net lifecycle callbacks after one
+ * connection session has already been established.
+ */
+struct qcontrol_net_phase_action {
+    qcontrol_net_phase_action_type_t type;
+    union {
+        /** errno value for BLOCK_ERRNO */
+        int errno_val;
+    };
+};
+
 /* ============================================================================
  * Net Action Convenience Macros
  * ============================================================================ */
@@ -217,6 +267,22 @@ struct qcontrol_net_action {
 /** Return STATE action (track state, no transforms) */
 #define QCONTROL_NET_STATE(s) \
     ((qcontrol_net_action_t){ .type = QCONTROL_NET_ACTION_STATE, .state = (s) })
+
+/* ============================================================================
+ * Net Phase Action Convenience Macros
+ * ============================================================================ */
+
+/** Return PASS action (keep the tracked connection open) */
+#define QCONTROL_NET_PHASE_PASS \
+    ((qcontrol_net_phase_action_t){ .type = QCONTROL_NET_PHASE_ACTION_PASS })
+
+/** Return BLOCK action (terminate the tracked connection) */
+#define QCONTROL_NET_PHASE_BLOCK \
+    ((qcontrol_net_phase_action_t){ .type = QCONTROL_NET_PHASE_ACTION_BLOCK })
+
+/** Return BLOCK_ERRNO action (terminate with a specific errno) */
+#define QCONTROL_NET_PHASE_BLOCK_WITH(e) \
+    ((qcontrol_net_phase_action_t){ .type = QCONTROL_NET_PHASE_ACTION_BLOCK_ERRNO, .errno_val = (e) })
 
 /* ============================================================================
  * Net Event Structures
@@ -246,6 +312,9 @@ typedef struct {
 
     /** Result: 0 on success, -errno on failure */
     int result;
+
+    /** Originating process identity and ancestor executable lineage */
+    qcontrol_process_identity_t process;
 } qcontrol_net_connect_event_t;
 
 /**
@@ -367,7 +436,8 @@ typedef struct {
 
 /**
  * Net context passed to transform functions.
- * Contains all discovered information about the connection.
+ * Contains the shared connection metadata and any discovered identity details
+ * accumulated for the tracked connection.
  */
 struct qcontrol_net_ctx {
     /** Socket file descriptor */
@@ -390,6 +460,8 @@ struct qcontrol_net_ctx {
     int is_tls;
     const char* tls_version;
     size_t tls_version_len;
+    const char* tls_cipher;
+    size_t tls_cipher_len;
 
     /** Domain name if discovered (may be NULL) */
     const char* domain;
@@ -398,6 +470,9 @@ struct qcontrol_net_ctx {
     /** Protocol if detected (may be NULL) */
     const char* protocol;
     size_t protocol_len;
+
+    /** Originating process identity and ancestor executable lineage */
+    qcontrol_process_identity_t process;
 };
 
 /* ============================================================================
@@ -412,6 +487,8 @@ struct qcontrol_net_ctx {
  * - BLOCK: reject the connection
  * - SESSION: intercept with I/O config and/or modifications
  * - STATE: track state only, no transforms
+ *
+ * Hosts may invoke this callback concurrently for independent connections.
  *
  * NOTE: Not yet implemented. Returns ENOSYS.
  */
@@ -428,6 +505,8 @@ typedef qcontrol_net_action_t (*qcontrol_net_connect_fn)(
  * - SESSION: intercept with I/O config
  * - STATE: track state only, no transforms
  *
+ * Hosts may invoke this callback concurrently for independent connections.
+ *
  * NOTE: Not yet implemented. Returns ENOSYS.
  */
 typedef qcontrol_net_action_t (*qcontrol_net_accept_fn)(
@@ -437,12 +516,14 @@ typedef qcontrol_net_action_t (*qcontrol_net_accept_fn)(
 /**
  * Net TLS callback - called when TLS handshake completes.
  *
- * Provides TLS version and cipher information. Can update session
- * based on TLS properties.
+ * Provides TLS version and cipher information. Can keep the connection open or
+ * terminate it now that stronger TLS identity evidence is available.
+ *
+ * Hosts may invoke this callback concurrently for independent connections.
  *
  * NOTE: Not yet implemented.
  */
-typedef void (*qcontrol_net_tls_fn)(
+typedef qcontrol_net_phase_action_t (*qcontrol_net_tls_fn)(
     void* state,
     qcontrol_net_tls_event_t* event
 );
@@ -450,12 +531,15 @@ typedef void (*qcontrol_net_tls_fn)(
 /**
  * Net domain callback - called when domain name is discovered.
  *
- * Domain may come from SNI, Host header, or other sources.
- * Can update session based on domain.
+ * Domain may come from CONNECT authority, SNI, Host header, or other sources.
+ * Can keep the connection open or terminate it once host-based policy can be
+ * evaluated confidently.
+ *
+ * Hosts may invoke this callback concurrently for independent connections.
  *
  * NOTE: Not yet implemented.
  */
-typedef void (*qcontrol_net_domain_fn)(
+typedef qcontrol_net_phase_action_t (*qcontrol_net_domain_fn)(
     void* state,
     qcontrol_net_domain_event_t* event
 );
@@ -463,12 +547,14 @@ typedef void (*qcontrol_net_domain_fn)(
 /**
  * Net protocol callback - called when application protocol is detected.
  *
- * Protocol may come from ALPN or content sniffing.
- * Can update session based on protocol.
+ * Protocol may come from ALPN or content sniffing. Can keep the connection
+ * open or terminate it once protocol-aware policy has enough evidence.
+ *
+ * Hosts may invoke this callback concurrently for independent connections.
  *
  * NOTE: Not yet implemented.
  */
-typedef void (*qcontrol_net_protocol_fn)(
+typedef qcontrol_net_phase_action_t (*qcontrol_net_protocol_fn)(
     void* state,
     qcontrol_net_protocol_event_t* event
 );
@@ -478,6 +564,8 @@ typedef void (*qcontrol_net_protocol_fn)(
  *
  * Called before data is sent. Can block but not modify.
  * Modification happens via session send_config transforms.
+ *
+ * Hosts may invoke this callback concurrently for independent connections.
  *
  * NOTE: Not yet implemented. Returns ENOSYS.
  */
@@ -492,6 +580,8 @@ typedef qcontrol_net_action_t (*qcontrol_net_send_fn)(
  * Called after data is received. Can block but not modify.
  * Modification happens via session recv_config transforms.
  *
+ * Hosts may invoke this callback concurrently for independent connections.
+ *
  * NOTE: Not yet implemented. Returns ENOSYS.
  */
 typedef qcontrol_net_action_t (*qcontrol_net_recv_fn)(
@@ -504,6 +594,8 @@ typedef qcontrol_net_action_t (*qcontrol_net_recv_fn)(
  *
  * Called when connection is closed.
  * Plugin is responsible for freeing state here.
+ *
+ * Hosts may invoke this callback concurrently for independent connections.
  *
  * NOTE: Not yet implemented.
  */

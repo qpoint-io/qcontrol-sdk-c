@@ -7,6 +7,14 @@
  * - State flows automatically between operations on the same fd
  * - Declarative transforms (prefix, suffix, replace) require zero code
  * - The agent handles heavy lifting; SDKs are thin wrappers
+ *
+ * Concurrency (see also plugin.h):
+ * - Hosts may invoke file callbacks concurrently for **independent** file
+ *   sessions (distinct host-tracked handles / streams).
+ * - Hosts may serialize callbacks for a **single** session so multi-plugin
+ *   chains and transforms stay ordered.
+ * - Plugins must synchronize any shared mutable state they keep outside the
+ *   session state pointer returned from open.
  */
 
 #ifndef QCONTROL_FILE_H
@@ -15,6 +23,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
+
+#include "buffer.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -68,11 +78,56 @@ typedef struct {
  * Forward Declarations
  * ============================================================================ */
 
-typedef struct qcontrol_buffer qcontrol_buffer_t;
 typedef struct qcontrol_file_ctx qcontrol_file_ctx_t;
 typedef struct qcontrol_file_rw_config qcontrol_file_rw_config_t;
 typedef struct qcontrol_file_session qcontrol_file_session_t;
 typedef struct qcontrol_file_action qcontrol_file_action_t;
+typedef struct qcontrol_file_op_action qcontrol_file_op_action_t;
+
+/* ============================================================================
+ * File Policy Operation Types
+ * ============================================================================ */
+
+/**
+ * Coarse policy class used to map filesystem operations onto OpenShell-style
+ * read-only versus read-write policy buckets.
+ */
+typedef enum {
+    /** Operation only reads path metadata or directory structure */
+    QCONTROL_FILE_POLICY_CLASS_READ = 0,
+    /** Operation mutates path state or permissions */
+    QCONTROL_FILE_POLICY_CLASS_WRITE = 1,
+} qcontrol_file_policy_class_t;
+
+/**
+ * Path-oriented filesystem operations that do not fit the stream session model.
+ */
+typedef enum {
+    QCONTROL_FILE_OP_ACCESS = 0,
+    QCONTROL_FILE_OP_STAT = 1,
+    QCONTROL_FILE_OP_READLINK = 2,
+    QCONTROL_FILE_OP_OPENDIR = 3,
+    QCONTROL_FILE_OP_RENAME = 4,
+    QCONTROL_FILE_OP_UNLINK = 5,
+    QCONTROL_FILE_OP_MKDIR = 6,
+    QCONTROL_FILE_OP_RMDIR = 7,
+    QCONTROL_FILE_OP_LINK = 8,
+    QCONTROL_FILE_OP_SYMLINK = 9,
+    QCONTROL_FILE_OP_CHMOD = 10,
+    QCONTROL_FILE_OP_CHOWN = 11,
+} qcontrol_file_op_kind_t;
+
+/**
+ * Action types returned by generic path-operation callbacks.
+ */
+typedef enum {
+    /** Allow the filesystem operation to continue */
+    QCONTROL_FILE_OP_ACTION_PASS = 0,
+    /** Block the filesystem operation with EACCES */
+    QCONTROL_FILE_OP_ACTION_BLOCK = 1,
+    /** Block the filesystem operation with a specific errno */
+    QCONTROL_FILE_OP_ACTION_BLOCK_ERRNO = 2,
+} qcontrol_file_op_action_type_t;
 
 /* ============================================================================
  * File Transform Function Types
@@ -195,6 +250,17 @@ struct qcontrol_file_action {
     };
 };
 
+/**
+ * Action result returned from generic file path-operation callbacks.
+ */
+struct qcontrol_file_op_action {
+    qcontrol_file_op_action_type_t type;
+    union {
+        /** errno value for BLOCK_ERRNO */
+        int errno_val;
+    };
+};
+
 /* ============================================================================
  * File Action Convenience Macros
  * ============================================================================ */
@@ -214,6 +280,18 @@ struct qcontrol_file_action {
 /** Return STATE action (track state, no transforms) */
 #define QCONTROL_FILE_STATE(s) \
     ((qcontrol_file_action_t){ .type = QCONTROL_FILE_ACTION_STATE, .state = (s) })
+
+/** Return PASS action for generic path operations */
+#define QCONTROL_FILE_OP_PASS \
+    ((qcontrol_file_op_action_t){ .type = QCONTROL_FILE_OP_ACTION_PASS })
+
+/** Return BLOCK action for generic path operations */
+#define QCONTROL_FILE_OP_BLOCK \
+    ((qcontrol_file_op_action_t){ .type = QCONTROL_FILE_OP_ACTION_BLOCK })
+
+/** Return BLOCK_ERRNO action for generic path operations */
+#define QCONTROL_FILE_OP_BLOCK_WITH(e) \
+    ((qcontrol_file_op_action_t){ .type = QCONTROL_FILE_OP_ACTION_BLOCK_ERRNO, .errno_val = (e) })
 
 /* ============================================================================
  * File Event Structures
@@ -283,6 +361,43 @@ typedef struct {
 } qcontrol_file_close_event_t;
 
 /**
+ * Event passed to on_file_op callback.
+ *
+ * These operations are path-oriented rather than fd-stream-oriented, so they
+ * use a dedicated event family instead of the session transform model.
+ */
+typedef struct {
+    /** Specific filesystem operation being performed */
+    qcontrol_file_op_kind_t kind;
+
+    /** Coarse policy bucket for read-only versus read-write policy mapping */
+    qcontrol_file_policy_class_t policy_class;
+
+    /** Primary path argument for the operation */
+    const char* path;
+    size_t path_len;
+
+    /** Secondary path for two-path operations like rename/link/symlink */
+    const char* secondary_path;
+    size_t secondary_path_len;
+
+    /** dirfd context for the primary path on *at-style operations, or -1 */
+    int dirfd;
+
+    /** AT_* flags or 0 when the operation has no flags */
+    int at_flags;
+
+    /** Result: 0 on success, -errno on failure */
+    int result;
+
+    /**
+     * dirfd context for the secondary path on two-path *at-style operations,
+     * or -1 when not applicable
+     */
+    int secondary_dirfd;
+} qcontrol_file_op_event_t;
+
+/**
  * File context passed to transform functions.
  */
 struct qcontrol_file_ctx {
@@ -309,6 +424,8 @@ struct qcontrol_file_ctx {
  * - BLOCK: reject the open (close fd, return error)
  * - SESSION: intercept with read/write config
  * - STATE: track state only, no transforms
+ *
+ * Hosts may invoke this concurrently for independent opens/sessions.
  */
 typedef qcontrol_file_action_t (*qcontrol_file_open_fn)(
     qcontrol_file_open_event_t* event
@@ -319,6 +436,9 @@ typedef qcontrol_file_action_t (*qcontrol_file_open_fn)(
  *
  * Called after read() syscall completes. Can block but not modify.
  * Modification happens via session read config transforms.
+ *
+ * Hosts may invoke this concurrently for independent sessions. The same
+ * session may be serialized by the host.
  */
 typedef qcontrol_file_action_t (*qcontrol_file_read_fn)(
     void* state,
@@ -330,6 +450,9 @@ typedef qcontrol_file_action_t (*qcontrol_file_read_fn)(
  *
  * Called before write() syscall executes. Can block.
  * Modification happens via session write config transforms.
+ *
+ * Hosts may invoke this concurrently for independent sessions. The same
+ * session may be serialized by the host.
  */
 typedef qcontrol_file_action_t (*qcontrol_file_write_fn)(
     void* state,
@@ -341,159 +464,22 @@ typedef qcontrol_file_action_t (*qcontrol_file_write_fn)(
  *
  * Called after close() syscall completes.
  * Plugin is responsible for freeing state here.
+ *
+ * Hosts may invoke this concurrently for independent sessions.
  */
 typedef void (*qcontrol_file_close_fn)(
     void* state,
     qcontrol_file_close_event_t* event
 );
 
-/* ============================================================================
- * Buffer Operations (implemented by agent)
- * ============================================================================ */
-
 /**
- * Get buffer length.
+ * Generic path-operation callback for filesystem actions outside the stream
+ * lifecycle.
+ *
+ * Hosts may invoke this concurrently for independent path-ops.
  */
-size_t qcontrol_buffer_len(const qcontrol_buffer_t* buf);
-
-/**
- * Get pointer to buffer data.
- */
-const char* qcontrol_buffer_data(const qcontrol_buffer_t* buf);
-
-/**
- * Check if buffer contains needle.
- * @return 1 if found, 0 otherwise
- */
-int qcontrol_buffer_contains(
-    const qcontrol_buffer_t* buf,
-    const char* needle,
-    size_t needle_len
-);
-
-/**
- * Check if buffer starts with prefix.
- * @return 1 if true, 0 otherwise
- */
-int qcontrol_buffer_starts_with(
-    const qcontrol_buffer_t* buf,
-    const char* prefix,
-    size_t prefix_len
-);
-
-/**
- * Check if buffer ends with suffix.
- * @return 1 if true, 0 otherwise
- */
-int qcontrol_buffer_ends_with(
-    const qcontrol_buffer_t* buf,
-    const char* suffix,
-    size_t suffix_len
-);
-
-/**
- * Find index of needle in buffer.
- * @return Index if found, SIZE_MAX if not found
- */
-size_t qcontrol_buffer_index_of(
-    const qcontrol_buffer_t* buf,
-    const char* needle,
-    size_t needle_len
-);
-
-/**
- * Prepend data to buffer.
- */
-void qcontrol_buffer_prepend(
-    qcontrol_buffer_t* buf,
-    const char* data,
-    size_t len
-);
-
-/**
- * Append data to buffer.
- */
-void qcontrol_buffer_append(
-    qcontrol_buffer_t* buf,
-    const char* data,
-    size_t len
-);
-
-/**
- * Replace first occurrence of needle with replacement.
- * @return 1 if replaced, 0 if not found
- */
-int qcontrol_buffer_replace(
-    qcontrol_buffer_t* buf,
-    const char* needle,
-    size_t needle_len,
-    const char* replacement,
-    size_t replacement_len
-);
-
-/**
- * Replace all occurrences of needle with replacement.
- * @return Number of replacements made
- */
-size_t qcontrol_buffer_replace_all(
-    qcontrol_buffer_t* buf,
-    const char* needle,
-    size_t needle_len,
-    const char* replacement,
-    size_t replacement_len
-);
-
-/**
- * Remove first occurrence of needle.
- * @return 1 if removed, 0 if not found
- */
-int qcontrol_buffer_remove(
-    qcontrol_buffer_t* buf,
-    const char* needle,
-    size_t needle_len
-);
-
-/**
- * Remove all occurrences of needle.
- * @return Number of removals
- */
-size_t qcontrol_buffer_remove_all(
-    qcontrol_buffer_t* buf,
-    const char* needle,
-    size_t needle_len
-);
-
-/**
- * Clear buffer contents.
- */
-void qcontrol_buffer_clear(qcontrol_buffer_t* buf);
-
-/**
- * Set buffer contents to new data.
- */
-void qcontrol_buffer_set(
-    qcontrol_buffer_t* buf,
-    const char* data,
-    size_t len
-);
-
-/**
- * Insert data at position.
- */
-void qcontrol_buffer_insert_at(
-    qcontrol_buffer_t* buf,
-    size_t pos,
-    const char* data,
-    size_t len
-);
-
-/**
- * Remove range from buffer.
- */
-void qcontrol_buffer_remove_range(
-    qcontrol_buffer_t* buf,
-    size_t start,
-    size_t end
+typedef qcontrol_file_op_action_t (*qcontrol_file_op_fn)(
+    qcontrol_file_op_event_t* event
 );
 
 #ifdef __cplusplus

@@ -31,7 +31,11 @@ typedef struct {
 /**
  * Initialize logging when the plugin loads.
  */
-static int plugin_init(void) {
+static int plugin_init(const qcontrol_string_view_t *config, char *error,
+    size_t error_cap) {
+    (void)config;
+    (void)error;
+    (void)error_cap;
     qcontrol_log_init(&logger, NULL);
     qcontrol_log(&logger, "[http_logger] initializing...\n");
     return 0;

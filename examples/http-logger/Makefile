@@ -1,7 +1,7 @@
 # http-logger plugin Makefile
 #
 # Build:   make build  (shared library for dynamic loading)
-# Dist:    make dist   (object file for bundling)
+# Dist:    make dist   (object file for packaging)
 # Clean:   make clean
 
 NAME := http-logger

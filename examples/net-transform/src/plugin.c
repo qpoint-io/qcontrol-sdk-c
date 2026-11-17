@@ -2,7 +2,7 @@
  * @file plugin.c
  * @brief Net transform plugin - demonstrates modifying plaintext network traffic.
  *
- * This example is intended for `qcontrol wrap`.
+ * This example is intended for `qcontrol run`.
  * It rewrites simple text responses by replacing:
  *   "hello"  -> "hullo"
  *   "server" -> "client"
@@ -46,10 +46,11 @@ static qcontrol_net_action_t on_net_connect(qcontrol_net_connect_event_t* ev) {
     return QCONTROL_NET_SESSION(session);
 }
 
-static void on_net_domain(void* state, qcontrol_net_domain_event_t* ev) {
+static qcontrol_net_phase_action_t on_net_domain(void* state, qcontrol_net_domain_event_t* ev) {
     (void)state;
     qcontrol_log(&logger, "[net_transform] domain(fd=%d, domain=%s)\n",
             ev->fd, ev->domain);
+    return QCONTROL_NET_PHASE_PASS;
 }
 
 static void on_net_close(void* state, qcontrol_net_close_event_t* ev) {
@@ -58,7 +59,11 @@ static void on_net_close(void* state, qcontrol_net_close_event_t* ev) {
             ev->fd, ev->result);
 }
 
-static int plugin_init(void) {
+static int plugin_init(const qcontrol_string_view_t *config, char *error,
+    size_t error_cap) {
+    (void)config;
+    (void)error;
+    (void)error_cap;
     qcontrol_log_init(&logger, NULL);
     qcontrol_log(&logger, "[net_transform] initializing...\n");
     return 0;

@@ -9,12 +9,9 @@
 #   # Direct execution (no plugins)
 #   ./test-file-ops.sh
 #
-#   # With plugins via qcontrol wrap
-#   qcontrol wrap --bundle ../path/to/bundle.so -- ./test-file-ops.sh
-#
-#   # Or with dynamic plugins
+#   # With dynamic plugins
 #   QCONTROL_PLUGINS=./file-logger.so,./access-control.so \
-#     qcontrol wrap -- ./test-file-ops.sh
+#     qcontrol run -- ./test-file-ops.sh
 #
 # Expected behavior with plugins:
 #   - file-logger: Logs all open/read/write/close operations

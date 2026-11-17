@@ -7,9 +7,15 @@
  * - State flows automatically between I/O operations on the same process
  * - Declarative transforms (prefix, suffix, replace) require zero code
  * - Modifications to argv, env, cwd are declarative fields
- * - The agent handles heavy lifting; SDKs are thin wrappers
+ * - The agent / control host handles heavy lifting; SDKs are thin wrappers
  *
- * NOTE: This API is v1 spec only. Callbacks currently return "not implemented".
+ * Concurrency (see also plugin.h):
+ * - Hosts may invoke exec callbacks concurrently for **independent** exec
+ *   sessions (distinct host-tracked child sessions).
+ * - Hosts may serialize callbacks for a **single** session so multi-plugin
+ *   stdio chains and transforms stay ordered.
+ * - Plugins must synchronize any shared mutable state they keep outside the
+ *   session state pointer returned from on_exec.
  */
 
 #ifndef QCONTROL_EXEC_H
@@ -18,6 +24,13 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/types.h>
+
+#include "buffer.h"
+
+#ifdef _WIN32
+typedef int uid_t;
+typedef int gid_t;
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -61,7 +74,6 @@ typedef struct {
  * Forward Declarations
  * ============================================================================ */
 
-typedef struct qcontrol_buffer qcontrol_buffer_t;
 typedef struct qcontrol_exec_ctx qcontrol_exec_ctx_t;
 typedef struct qcontrol_exec_rw_config qcontrol_exec_rw_config_t;
 typedef struct qcontrol_exec_session qcontrol_exec_session_t;
@@ -175,6 +187,18 @@ struct qcontrol_exec_session {
 
     /** Replace working directory */
     const char* set_cwd;
+
+    /** Replace effective user identity when the host supports launch control */
+    uid_t set_uid;
+
+    /** Replace effective primary group identity when the host supports launch control */
+    gid_t set_gid;
+
+    /** Non-zero when set_uid should be applied */
+    int has_set_uid;
+
+    /** Non-zero when set_gid should be applied */
+    int has_set_gid;
 
     /* === I/O TRANSFORM CONFIGS === */
 
@@ -338,13 +362,13 @@ struct qcontrol_exec_ctx {
 /**
  * Exec callback - determines session configuration.
  *
- * Called before exec syscall executes. Return:
+ * Called before exec/spawn syscall executes. Return:
  * - PASS: no interception for this exec
  * - BLOCK: reject the exec (return error)
  * - SESSION: intercept with I/O config and/or modifications
  * - STATE: track state only, no transforms
  *
- * NOTE: Not yet implemented. Returns ENOSYS.
+ * Hosts may invoke this concurrently for independent admits.
  */
 typedef qcontrol_exec_action_t (*qcontrol_exec_fn)(
     qcontrol_exec_event_t* event
@@ -356,7 +380,8 @@ typedef qcontrol_exec_action_t (*qcontrol_exec_fn)(
  * Called before data is written to child stdin. Can block but not modify.
  * Modification happens via session stdin_config transforms.
  *
- * NOTE: Not yet implemented. Returns ENOSYS.
+ * Hosts may invoke this concurrently for independent sessions. The same
+ * session may be serialized by the host.
  */
 typedef qcontrol_exec_action_t (*qcontrol_exec_stdin_fn)(
     void* state,
@@ -369,7 +394,8 @@ typedef qcontrol_exec_action_t (*qcontrol_exec_stdin_fn)(
  * Called after data is read from child stdout. Can block but not modify.
  * Modification happens via session stdout_config transforms.
  *
- * NOTE: Not yet implemented. Returns ENOSYS.
+ * Hosts may invoke this concurrently for independent sessions. The same
+ * session may be serialized by the host.
  */
 typedef qcontrol_exec_action_t (*qcontrol_exec_stdout_fn)(
     void* state,
@@ -382,7 +408,8 @@ typedef qcontrol_exec_action_t (*qcontrol_exec_stdout_fn)(
  * Called after data is read from child stderr. Can block but not modify.
  * Modification happens via session stderr_config transforms.
  *
- * NOTE: Not yet implemented. Returns ENOSYS.
+ * Hosts may invoke this concurrently for independent sessions. The same
+ * session may be serialized by the host.
  */
 typedef qcontrol_exec_action_t (*qcontrol_exec_stderr_fn)(
     void* state,
@@ -395,7 +422,7 @@ typedef qcontrol_exec_action_t (*qcontrol_exec_stderr_fn)(
  * Called when child process exits.
  * Plugin is responsible for freeing state here.
  *
- * NOTE: Not yet implemented.
+ * Hosts may invoke this concurrently for independent sessions.
  */
 typedef void (*qcontrol_exec_exit_fn)(
     void* state,

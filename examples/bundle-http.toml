@@ -1,8 +1,0 @@
-[bundle]
-output = "c-http-plugins.so"
-
-[[plugins]]
-source = "./http-logger"
-
-[[plugins]]
-source = "./http-rewrite"

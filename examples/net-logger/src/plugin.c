@@ -6,7 +6,7 @@
  * operations. It uses the descriptor-based plugin model to register
  * callbacks for connect, accept, TLS, domain, protocol, send, recv, and close.
  *
- * This plugin is useful with `qcontrol wrap`, where wrapped HTTP and HTTPS
+ * This plugin is useful with `qcontrol run`, where instrumented HTTP and HTTPS
  * traffic is normalized into the network ABI and routed through these
  * callbacks. Native agent-side net hooks are still under development, but the
  * current implementation already exercises the same plugin-facing ABI.
@@ -16,11 +16,10 @@
  *
  * Build:
  *   make build   # Build shared library for dynamic loading
- *   make dist    # Build object file for bundling
+ *   make dist    # Build object file for static embedding or packaging
  *
  * Usage:
- *   qcontrol bundle --plugins ./net-logger -o net-logger-demo.so
- *   qcontrol wrap --bundle ./net-logger-demo.so -- ./target
+ *   qcontrol run --plugins ./dist/net-logger-<arch>.so -- ./target
  */
 
 #include <qcontrol.h>
@@ -58,7 +57,7 @@ static qcontrol_net_action_t on_net_accept(qcontrol_net_accept_event_t* ev) {
 /**
  * Log TLS handshake completion.
  */
-static void on_net_tls(void* state, qcontrol_net_tls_event_t* ev) {
+static qcontrol_net_phase_action_t on_net_tls(void* state, qcontrol_net_tls_event_t* ev) {
     (void)state;
     qcontrol_log(&logger, "[net_logger] tls(fd=%d, version=%s)\n",
             ev->fd, ev->version);
@@ -66,24 +65,28 @@ static void on_net_tls(void* state, qcontrol_net_tls_event_t* ev) {
     if (ev->cipher != NULL) {
         qcontrol_log(&logger, "[net_logger]   cipher=%s\n", ev->cipher);
     }
+
+    return QCONTROL_NET_PHASE_PASS;
 }
 
 /**
  * Log domain name discovery.
  */
-static void on_net_domain(void* state, qcontrol_net_domain_event_t* ev) {
+static qcontrol_net_phase_action_t on_net_domain(void* state, qcontrol_net_domain_event_t* ev) {
     (void)state;
     qcontrol_log(&logger, "[net_logger] domain(fd=%d, domain=%s)\n",
             ev->fd, ev->domain);
+    return QCONTROL_NET_PHASE_PASS;
 }
 
 /**
  * Log protocol detection.
  */
-static void on_net_protocol(void* state, qcontrol_net_protocol_event_t* ev) {
+static qcontrol_net_phase_action_t on_net_protocol(void* state, qcontrol_net_protocol_event_t* ev) {
     (void)state;
     qcontrol_log(&logger, "[net_logger] protocol(fd=%d, protocol=%s)\n",
             ev->fd, ev->protocol);
+    return QCONTROL_NET_PHASE_PASS;
 }
 
 /**
@@ -118,7 +121,11 @@ static void on_net_close(void* state, qcontrol_net_close_event_t* ev) {
 /**
  * Plugin initialization - called when the plugin is loaded.
  */
-static int plugin_init(void) {
+static int plugin_init(const qcontrol_string_view_t *config, char *error,
+    size_t error_cap) {
+    (void)config;
+    (void)error;
+    (void)error_cap;
     qcontrol_log_init(&logger, NULL);
     qcontrol_log(&logger, "[net_logger] initializing...\n");
     return 0;

@@ -7,7 +7,7 @@
 
     cd examples/file-logger
     make build                    # builds .so (shared library)
-    make dist                     # builds .o  (object file for bundling)
+    make dist                     # builds .o  (object file for packaging)
 
   Build all example plugins:
 
@@ -20,29 +20,16 @@
     make build-exec              # exec plugin shared libraries
     make build-net               # net plugin shared libraries
 
-  Bundle plugins into a single library:
-
-    cd examples
-    qcontrol bundle -c bundle.toml
-
-  Bundle plugins by type:
-
-    make bundle-file             # c-file-plugins.so
-    make bundle-exec             # c-exec-plugins.so
-    make bundle-net              # c-net-plugins.so
-
   Run a command with qcontrol instrumentation:
 
-    qcontrol wrap --bundle <bundle.so> -- <command>
+    qcontrol run --plugins <plugin.so> -- <command>
 
-  Example - instrument 'cat' with bundled plugins:
+  Example - instrument 'cat' with a built plugin:
 
     cd examples
-    qcontrol bundle -c bundle.toml
-    qcontrol wrap --bundle c-plugins.so -- cat /etc/hostname
+    qcontrol run --plugins ./file-logger/dist/file-logger-<arch>.<ext> -- cat /etc/hostname
 
   Useful commands:
 
     qcontrol --help               # full CLI help
-    qcontrol wrap --help          # instrumentation options
-    qcontrol bundle --help        # bundling options
+    qcontrol run --help           # instrumentation options

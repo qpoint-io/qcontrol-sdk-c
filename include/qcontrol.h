@@ -32,7 +32,7 @@
  * of plugin paths:
  *
  * @code
- * QCONTROL_PLUGINS=./plugin1.so,./plugin2.so qcontrol wrap -- ./target
+ * QCONTROL_PLUGINS=./plugin1.so,./plugin2.so qcontrol run -- ./target
  * @endcode
  */
 
@@ -40,7 +40,11 @@
 #define QCONTROL_H
 
 #include "qcontrol/common.h"
+#include "qcontrol/buffer.h"
+#include "qcontrol/process.h"
 #include "qcontrol/file.h"
+#include "qcontrol/stream.h"
+#include "qcontrol/netstat.h"
 #include "qcontrol/plugin.h"
 
 #endif /* QCONTROL_H */

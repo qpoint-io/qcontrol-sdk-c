@@ -2,12 +2,11 @@
 #
 # Demo script for the C net-logger plugin.
 #
-# Run this script inside `qcontrol wrap`, similar to test-file-ops.sh:
+# Run this script through `qcontrol run`, similar to test-file-ops.sh:
 #
-#   qcontrol bundle --plugins ./net-logger -o ./net-logger-demo.so
-#   qcontrol wrap --bundle ./net-logger-demo.so -- ./test-net-io.sh
+#   qcontrol run --plugins ./net-logger/dist/net-logger-<arch>.<ext> -- ./test-net-io.sh
 #
-#   qcontrol wrap --bundle ./net-logger-demo.so -- ./test-net-io.sh https://example.com/
+#   qcontrol run --plugins ./net-logger/dist/net-logger-<arch>.<ext> -- ./test-net-io.sh https://example.com/
 #
 
 set -euo pipefail

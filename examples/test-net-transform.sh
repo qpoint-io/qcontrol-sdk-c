@@ -2,10 +2,9 @@
 #
 # Demo script for the C net-transform plugin.
 #
-# Run this script inside `qcontrol wrap`:
+# Run this script through `qcontrol run`:
 #
-#   qcontrol bundle --plugins ./net-transform -o ./net-transform-demo.so
-#   qcontrol wrap --bundle ./net-transform-demo.so -- ./test-net-transform.sh
+#   qcontrol run --plugins ./net-transform/dist/net-transform-<arch>.<ext> -- ./test-net-transform.sh
 #
 
 set -euo pipefail

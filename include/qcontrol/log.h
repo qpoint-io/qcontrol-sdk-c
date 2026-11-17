@@ -19,20 +19,30 @@
  *
  * QCONTROL_LOGGER(logger);
  *
- * int qcontrol_plugin_init(void) {
+ * static int on_init(const qcontrol_string_view_t* config, char* error, size_t error_cap) {
+ *     (void)config; (void)error; (void)error_cap;
  *     qcontrol_log_init(&logger, NULL);  // NULL = use QCONTROL_LOG_FILE env var
  *     qcontrol_log(&logger, "[plugin] started\n");
  *     return 0;
  * }
  *
- * static qcontrol_status_t on_file_open_leave(qcontrol_file_open_ctx_t* ctx) {
- *     qcontrol_log(&logger, "[plugin] open(%s) = %d\n", ctx->path, ctx->result);
- *     return QCONTROL_STATUS_CONTINUE;
+ * static qcontrol_file_action_t on_file_open(qcontrol_file_open_event_t* ev) {
+ *     qcontrol_log(&logger, "[plugin] open(%.*s) flags=0x%x\n",
+ *         (int)ev->path_len, ev->path, ev->flags);
+ *     return QCONTROL_FILE_PASS;
  * }
  *
- * void qcontrol_plugin_cleanup(void) {
+ * static void on_cleanup(void) {
  *     qcontrol_log_cleanup(&logger);
  * }
+ *
+ * const qcontrol_plugin_t qcontrol_plugin = {
+ *     .version = QCONTROL_PLUGIN_VERSION,
+ *     .name = "my-plugin",
+ *     .on_init = on_init,
+ *     .on_cleanup = on_cleanup,
+ *     .on_file_open = on_file_open,
+ * };
  * @endcode
  */
 
@@ -43,6 +53,9 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <pthread.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -110,11 +123,23 @@ static inline void qcontrol_log_init(qcontrol_logger_t* logger, const char* path
         return;  /* Already initialized */
     }
 
+    char env_path[4096];
     if (path == NULL) {
+#ifdef _WIN32
+        /* Worker applies LaunchContext via SetEnvironmentVariableW after spawn.
+         * CRT getenv() still sees the CreateProcess snapshot on mingw. */
+        DWORD n = GetEnvironmentVariableA("QCONTROL_LOG_FILE", env_path, (DWORD)sizeof(env_path));
+        if (n > 0 && n < sizeof(env_path)) {
+            path = env_path;
+        } else {
+            path = QCONTROL_LOG_DEFAULT_PATH;
+        }
+#else
         path = getenv("QCONTROL_LOG_FILE");
         if (path == NULL || path[0] == '\0') {
             path = QCONTROL_LOG_DEFAULT_PATH;
         }
+#endif
     }
 
     logger->file = fopen(path, "a");

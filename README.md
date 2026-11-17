@@ -6,15 +6,15 @@ Intercept. Observe. Transform. Build secure sandboxes for AI agents and control 
 
 **Overview:** [Introduction](#introduction) · [What Can You Build?](#what-can-you-build) · [Quick Start](#quick-start) · [Core Concepts](#core-concepts) · [Examples](#examples)
 
-**API Reference:** [File Operations](#file-operations) · [Exec Operations](#exec-operations) · [Network Operations](#network-operations) · [HTTP Operations](#http-operations)
+**API Reference:** [File Operations](#file-operations) · [Exec Operations](#exec-operations) · [Network Operations](#network-operations) · [HTTP Operations](#http-operations) · [SSE Operations](#sse-operations) · [WebSocket Operations](#websocket-operations) · [Configuration](#configuration)
 
-**Development:** [Building Plugins](#building-plugins) · [Bundling Plugins](#bundling-plugins) · [Environment Variables](#environment-variables)
+**Development:** [Building Plugins](#building-plugins) · [Running Plugins](#running-plugins) · [Environment Variables](#environment-variables)
 
 ---
 
 ## Introduction
 
-The Qcontrol C SDK lets you build plugins that hook directly into system calls and host-backed protocol surfaces, giving you precise control over how applications interact with files, processes, the network, and HTTP exchanges.
+The Qcontrol C SDK lets you build plugins that hook directly into system calls and host-backed protocol surfaces, giving you precise control over host-observed file, process, network, and HTTP surfaces.
 
 This makes Qcontrol ideal for building **AI agent sandboxes and runtimes**. As agents gain autonomy to read files, execute commands, and make network requests, you need visibility and control at the syscall level. Qcontrol gives you that:
 
@@ -22,8 +22,9 @@ This makes Qcontrol ideal for building **AI agent sandboxes and runtimes**. As a
 - **Intercept exec operations** — Monitor process spawning, modify arguments, capture stdin/stdout/stderr.
 - **Intercept network operations** — Watch connections form, inspect send/recv traffic, detect TLS and protocols.
 - **Intercept HTTP operations** — Inspect normalized request/response metadata, edit headers inline, and rewrite buffered bodies through host-backed HTTP callbacks.
+- **Intercept stream protocols above HTTP** — Observe parsed SSE records and logical WebSocket messages with shared connection/exchange correlation.
 
-Your plugins run inside the target process via native function hooking. Observe silently, block operations, or transform data in transit. No application changes required.
+Your plugins load in qcontrol host processes (qproxy, qmcp). Observe silently, block operations, or transform data on host-backed event paths.
 
 The SDK provides a clean C API with convenience macros for common patterns.
 
@@ -38,6 +39,7 @@ The SDK provides a clean C API with convenience macros for common patterns.
 | **Compliance** | Redact PII from output, mask credentials, filter sensitive data | [content-filter](examples/content-filter/) |
 | **Development** | Mock file systems, inject test data, transform formats on the fly | [text-transform](examples/text-transform/) |
 | **HTTP Governance** | Observe exchanges, normalize headers, rewrite API responses inline | [http-logger](examples/http-logger/), [http-rewrite](examples/http-rewrite/) |
+| **Streaming APIs** | Observe or terminate SSE/WebSocket flows and attach stream-scoped state | Public `qcontrol/sse.h`, `qcontrol/websocket.h`, `qcontrol/stream.h` |
 
 ## Quick Start
 
@@ -59,14 +61,15 @@ const qcontrol_plugin_t qcontrol_plugin = {
 };
 ```
 
-Bundle and run from a plugin directory using the Makefile pattern shown in [Building Plugins](#building-plugins):
+Build a shared library using the Makefile pattern shown in
+[Building Plugins](#building-plugins), then pass it to `qcontrol run`:
 
 ```bash
-qcontrol bundle --plugins ./my-plugin -o hello-plugin-bundle.so
-qcontrol wrap --bundle ./hello-plugin-bundle.so -- cat /etc/passwd
+qcontrol run --plugins ./libhello_plugin.so -- cat /etc/passwd
 ```
 
-That's it. Your plugin now intercepts every file open in the wrapped process.
+That's it. Your plugin now intercepts every file open in the instrumented
+process.
 
 ## Core Concepts
 
@@ -76,10 +79,10 @@ Qcontrol intercepts operations at four levels:
 
 | Domain | Operations | Status |
 |--------|------------|--------|
-| **File** | open, read, write, close | Fully implemented |
-| **Exec** | spawn, stdin, stdout, stderr, exit | SDK ready, agent coming soon |
-| **Network** | connect, accept, send, recv, close | SDK ready, agent coming soon |
-| **HTTP** | request, request body, request trailers, request done, response, response body, response trailers, response done, exchange close | Proxy-backed wrap mode available today |
+| **File** | open, read, write, close | Implemented in the native run/tap host |
+| **Exec** | spawn, stdin, stdout, stderr, exit | Implemented by the explicit exec host |
+| **Network** | connect, accept, send, recv, close | Implemented by the proxy-backed run path |
+| **HTTP** | request, request body, request trailers, request done, response, response body, response trailers, response done, exchange close | Implemented by the proxy-backed run path |
 
 ### Actions
 
@@ -204,6 +207,7 @@ File operations are fully implemented. Use these to observe, block, or transform
 | `on_file_read` | `qcontrol_file_action_t (*)(void*, qcontrol_file_read_event_t*)` | After read() | Observe or block |
 | `on_file_write` | `qcontrol_file_action_t (*)(void*, qcontrol_file_write_event_t*)` | Before write() | Observe or block |
 | `on_file_close` | `void (*)(void*, qcontrol_file_close_event_t*)` | After close() | Cleanup state |
+| `on_file_op` | `qcontrol_file_op_action_t (*)(qcontrol_file_op_event_t*)` | Path operations outside the fd stream lifecycle | Allow or deny metadata / mutation operations |
 
 The `void*` state parameter is your custom state returned from `on_file_open`.
 
@@ -244,6 +248,21 @@ The `void*` state parameter is your custom state returned from `on_file_open`.
 | `fd` | `int` | File descriptor |
 | `result` | `int` | Result (0 or -errno) |
 
+**qcontrol_file_op_event_t** — passed to `on_file_op`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `kind` | `qcontrol_file_op_kind_t` | Filesystem operation kind such as `QCONTROL_FILE_OP_STAT` or `QCONTROL_FILE_OP_RENAME` |
+| `policy_class` | `qcontrol_file_policy_class_t` | Coarse OpenShell-style read/write bucket |
+| `path` | `const char*` | Primary path argument |
+| `path_len` | `size_t` | Length of path |
+| `secondary_path` | `const char*` | Secondary path for two-path operations like rename/link/symlink |
+| `secondary_path_len` | `size_t` | Length of secondary_path |
+| `dirfd` | `int` | Primary-path `dirfd` context for `*at`-style operations, or `-1` |
+| `at_flags` | `int` | `AT_*` flags or `0` |
+| `result` | `int` | Result (0 or -errno) |
+| `secondary_dirfd` | `int` | Secondary-path `dirfd` context for two-path `*at` operations, or `-1` |
+
 ### Actions
 
 **Action macros** — return from callbacks:
@@ -254,6 +273,14 @@ The `void*` state parameter is your custom state returned from `on_file_open`.
 | `QCONTROL_FILE_BLOCK` | Block with EACCES |
 | `QCONTROL_FILE_BLOCK_WITH(errno)` | Block with custom errno |
 | `QCONTROL_FILE_STATE(ptr)` | Track state only, no transforms |
+
+**Path-operation action macros** — return from `on_file_op`:
+
+| Macro | Description |
+|-------|-------------|
+| `QCONTROL_FILE_OP_PASS` | Allow the path operation |
+| `QCONTROL_FILE_OP_BLOCK` | Block with EACCES |
+| `QCONTROL_FILE_OP_BLOCK_WITH(errno)` | Block with custom errno |
 
 For sessions, return a `qcontrol_file_action_t` with `.type = QCONTROL_FILE_ACTION_SESSION`.
 
@@ -481,6 +508,10 @@ static qcontrol_exec_session_t session = {
     .set_env = set_env,
     .unset_env = unset_env,
     .set_cwd = "/tmp/sandbox",
+    .set_uid = 1001,
+    .set_gid = 1001,
+    .has_set_uid = 1,
+    .has_set_gid = 1,
 
     // I/O transforms
     .stdin_config = NULL,
@@ -498,7 +529,7 @@ static qcontrol_exec_action_t on_exec(qcontrol_exec_event_t* ev) {
 
 ## Network Operations
 
-> **Note:** Proxy-backed wrap mode already exercises this ABI today. Native agent-side network hooks are still coming.
+> **Note:** Proxy-backed `qcontrol run` already exercises this ABI today. Native agent-side network hooks are still coming.
 
 ### Callbacks
 
@@ -506,9 +537,9 @@ static qcontrol_exec_action_t on_exec(qcontrol_exec_event_t* ev) {
 |----------|-----------|-------|---------|
 | `on_net_connect` | `qcontrol_net_action_t (*)(qcontrol_net_connect_event_t*)` | After connect() | Decide interception |
 | `on_net_accept` | `qcontrol_net_action_t (*)(qcontrol_net_accept_event_t*)` | After accept() | Decide interception |
-| `on_net_tls` | `void (*)(void*, qcontrol_net_tls_event_t*)` | After TLS handshake | Observe |
-| `on_net_domain` | `void (*)(void*, qcontrol_net_domain_event_t*)` | Domain discovered | Observe |
-| `on_net_protocol` | `void (*)(void*, qcontrol_net_protocol_event_t*)` | Protocol detected | Observe |
+| `on_net_tls` | `qcontrol_net_phase_action_t (*)(void*, qcontrol_net_tls_event_t*)` | After TLS handshake | Observe or terminate |
+| `on_net_domain` | `qcontrol_net_phase_action_t (*)(void*, qcontrol_net_domain_event_t*)` | Domain discovered | Observe or terminate |
+| `on_net_protocol` | `qcontrol_net_phase_action_t (*)(void*, qcontrol_net_protocol_event_t*)` | Protocol detected | Observe or terminate |
 | `on_net_send` | `qcontrol_net_action_t (*)(void*, qcontrol_net_send_event_t*)` | Before send | Observe or block |
 | `on_net_recv` | `qcontrol_net_action_t (*)(void*, qcontrol_net_recv_event_t*)` | After recv | Observe or block |
 | `on_net_close` | `void (*)(void*, qcontrol_net_close_event_t*)` | After close | Cleanup state |
@@ -527,6 +558,7 @@ static qcontrol_exec_action_t on_exec(qcontrol_exec_event_t* ev) {
 | `src_addr_len` | `size_t` | Length of src_addr |
 | `src_port` | `uint16_t` | Local source port |
 | `result` | `int` | 0 on success, -errno on failure |
+| `process` | `qcontrol_process_identity_t` | Originating process identity and ancestor executable lineage |
 
 **qcontrol_net_accept_event_t** — passed to `on_net_accept`:
 
@@ -603,6 +635,14 @@ static qcontrol_exec_action_t on_exec(qcontrol_exec_event_t* ev) {
 | `QCONTROL_NET_BLOCK_WITH(errno)` | Block with custom errno |
 | `QCONTROL_NET_STATE(ptr)` | Track state only |
 
+**Late-phase action macros** — return from `on_net_tls`, `on_net_domain`, and `on_net_protocol`:
+
+| Macro | Description |
+|-------|-------------|
+| `QCONTROL_NET_PHASE_PASS` | Keep the tracked connection open |
+| `QCONTROL_NET_PHASE_BLOCK` | Terminate the tracked connection |
+| `QCONTROL_NET_PHASE_BLOCK_WITH(errno)` | Terminate with a host-specific errno when supported |
+
 ### Sessions
 
 ```c
@@ -617,6 +657,7 @@ static qcontrol_net_session_t session = {
     // Connection modifications (connect only)
     .set_addr = "proxy.example.com",
     .set_port = 8080,
+    .inspection_mode = QCONTROL_NET_INSPECTION_INTERCEPT,
 
     // I/O transforms
     .send_config = NULL,
@@ -648,10 +689,13 @@ The `qcontrol_net_ctx_t` type in transform functions provides connection metadat
 | `is_tls` | `int` | Whether TLS is active (1/0) |
 | `tls_version` | `const char*` | TLS version (may be NULL) |
 | `tls_version_len` | `size_t` | Length of tls_version |
+| `tls_cipher` | `const char*` | TLS cipher suite (may be NULL) |
+| `tls_cipher_len` | `size_t` | Length of tls_cipher |
 | `domain` | `const char*` | Domain name (may be NULL) |
 | `domain_len` | `size_t` | Length of domain |
 | `protocol` | `const char*` | Protocol (may be NULL) |
 | `protocol_len` | `size_t` | Length of protocol |
+| `process` | `qcontrol_process_identity_t` | Originating process identity and ancestor executable lineage |
 
 ## HTTP Operations
 
@@ -834,6 +878,180 @@ The convenience macros in `<qcontrol/helpers.h>` wrap common literal-based edits
 | `QCONTROL_HTTP_HEADER_SET(headers, name, value)` | `qcontrol_http_headers_set(...)` |
 | `QCONTROL_HTTP_HEADER_REMOVE(headers, name)` | `qcontrol_http_headers_remove(...)` |
 
+## SSE Operations
+
+SSE stays inside one HTTP response. HTTP callbacks still own status, headers, and trailers, while qcontrol parses `text/event-stream` bodies into complete logical SSE events before your plugin sees them.
+
+For `text/event-stream` responses, `on_http_response_body` still receives decoded body chunks. `on_sse_event` is an additional parsed view of those chunks; plugins that implement both should keep exchange state and choose one semantic parser per exchange.
+
+### Callbacks
+
+| Callback | Signature | Phase | Purpose |
+|----------|-----------|-------|---------|
+| `on_sse_open` | `qcontrol_stream_action_t (*)(qcontrol_sse_open_event_t*)` | After SSE response detection | Start one SSE stream and optionally attach stream-scoped state |
+| `on_sse_event` | `qcontrol_stream_action_t (*)(void*, qcontrol_sse_event_record_t*)` | Once per parsed event | Observe or rewrite one logical SSE event |
+| `on_sse_close` | `void (*)(void*, qcontrol_sse_close_event_t*)` | When the stream ends | Observe terminal close state and clean up |
+
+### Events
+
+All SSE callbacks carry `qcontrol_stream_ctx_t` through the embedded `ctx` field:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `net` | `qcontrol_net_ctx_t` | Underlying normalized network context |
+| `connection_id` | `uint64_t` | Stable identifier for the owning tracked connection |
+| `exchange_id` | `uint64_t` | Stable identifier for the owning HTTP exchange |
+| `http_version` | `qcontrol_http_version_t` | HTTP version that created this SSE stream |
+| `protocol` | `qcontrol_stream_protocol_t` | `QCONTROL_STREAM_PROTOCOL_SSE` for this family |
+
+**qcontrol_sse_open_event_t** — passed to `on_sse_open`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ctx` | `qcontrol_stream_ctx_t` | Shared stream correlation context |
+| `content_type` | `const char*` | Response content type that identified this stream as SSE |
+| `content_type_len` | `size_t` | Length of `content_type` |
+
+**qcontrol_sse_event_record_t** — passed to `on_sse_event`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ctx` | `qcontrol_stream_ctx_t` | Shared stream correlation context |
+| `event_name` | `const char*` | Parsed `event:` field, or `NULL` when absent |
+| `event_name_len` | `size_t` | Length of `event_name` |
+| `id` | `const char*` | Parsed `id:` field, or `NULL` when absent |
+| `id_len` | `size_t` | Length of `id` |
+| `retry_ms` | `uint64_t` | Parsed `retry:` field value |
+| `has_retry_ms` | `int` | Non-zero when `retry_ms` is present |
+| `data` | `const char*` | Parsed logical event data |
+| `data_len` | `size_t` | Length of `data` |
+| `event_handle` | `qcontrol_sse_event_t*` | Host-backed mutable event handle, or `NULL` |
+
+**qcontrol_sse_close_event_t** — passed to `on_sse_close`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ctx` | `qcontrol_stream_ctx_t` | Shared stream correlation context |
+| `reason` | `qcontrol_http_close_reason_t` | Why the owning SSE response stream closed |
+
+### Actions
+
+Use the shared stream action helpers from `qcontrol/stream.h`:
+
+| Macro | Description |
+|-------|-------------|
+| `QCONTROL_STREAM_PASS` | Continue forwarding the current SSE callback normally |
+| `QCONTROL_STREAM_BLOCK` | Terminate the SSE response stream |
+| `QCONTROL_STREAM_STATE(ptr)` | Attach or replace one SSE-stream-scoped state pointer |
+
+### Mutable Event Handle
+
+When `event_handle` is non-`NULL`, `event_handle->ops` exposes host-backed mutation helpers:
+
+| API | Description |
+|-----|-------------|
+| `set_event_name()` / `clear_event_name()` | Replace or remove the parsed `event:` field |
+| `set_id()` / `clear_id()` | Replace or remove the parsed `id:` field |
+| `set_retry_ms()` / `clear_retry_ms()` | Replace or remove the parsed `retry:` field |
+| `set_data()` / `clear_data()` | Replace or clear the logical event data |
+
+### SSE Rewrite Example
+
+```c
+static qcontrol_stream_action_t on_sse_event(
+    void* state,
+    qcontrol_sse_event_record_t* ev
+) {
+    (void)state;
+    if (ev->event_handle != NULL && ev->event_handle->ops->set_data != NULL) {
+        ev->event_handle->ops->set_data(ev->event_handle->context, "pong", 4);
+    }
+    return QCONTROL_STREAM_PASS;
+}
+```
+
+## WebSocket Operations
+
+WebSocket is HTTP only through the upgrade handshake. HTTP callbacks still own the upgrade request and `101` response, and qcontrol delivers logical post-upgrade WebSocket messages after frame parsing, client unmasking, and message reassembly.
+
+### Callbacks
+
+| Callback | Signature | Phase | Purpose |
+|----------|-----------|-------|---------|
+| `on_websocket_open` | `qcontrol_stream_action_t (*)(qcontrol_websocket_open_event_t*)` | After a successful upgrade | Start one upgraded stream and optionally attach stream-scoped state |
+| `on_websocket_send` | `qcontrol_stream_action_t (*)(void*, qcontrol_websocket_message_event_t*)` | Once per client-to-server message | Observe or rewrite one logical outgoing message |
+| `on_websocket_recv` | `qcontrol_stream_action_t (*)(void*, qcontrol_websocket_message_event_t*)` | Once per server-to-client message | Observe or rewrite one logical incoming message |
+| `on_websocket_close` | `void (*)(void*, qcontrol_websocket_close_event_t*)` | When the upgraded stream ends | Observe terminal close state and clean up |
+
+### Events
+
+All WebSocket callbacks also carry `qcontrol_stream_ctx_t` through the embedded `ctx` field with the same `net`, `connection_id`, `exchange_id`, and `http_version` correlation described above.
+
+**qcontrol_websocket_open_event_t** — passed to `on_websocket_open`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ctx` | `qcontrol_stream_ctx_t` | Shared stream correlation context |
+| `subprotocol` | `const char*` | Negotiated subprotocol, or `NULL` |
+| `subprotocol_len` | `size_t` | Length of `subprotocol` |
+| `extensions` | `const char*` | Negotiated extensions header value, or `NULL` |
+| `extensions_len` | `size_t` | Length of `extensions` |
+
+**qcontrol_websocket_message_event_t** — passed to `on_websocket_send` and `on_websocket_recv`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ctx` | `qcontrol_stream_ctx_t` | Shared stream correlation context |
+| `kind` | `qcontrol_websocket_message_type_t` | `QCONTROL_WEBSOCKET_MESSAGE_TEXT` or `QCONTROL_WEBSOCKET_MESSAGE_BINARY` |
+| `bytes` | `const char*` | Logical message payload bytes |
+| `bytes_len` | `size_t` | Length of `bytes` |
+| `body` | `qcontrol_buffer_t*` | Host-backed mutable message buffer, or `NULL` |
+
+**qcontrol_websocket_close_event_t** — passed to `on_websocket_close`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ctx` | `qcontrol_stream_ctx_t` | Shared stream correlation context |
+| `direction` | `qcontrol_stream_direction_t` | First observed close-frame direction, or `QCONTROL_STREAM_DIRECTION_UNKNOWN` |
+| `code` | `uint16_t` | Observed close code, or `0` |
+| `reason` | `const char*` | UTF-8 close reason, or `NULL` |
+| `reason_len` | `size_t` | Length of `reason` |
+| `clean` | `int` | Non-zero when the close handshake completed cleanly |
+
+### Actions
+
+| Macro | Description |
+|-------|-------------|
+| `QCONTROL_STREAM_PASS` | Continue forwarding the current WebSocket callback normally |
+| `QCONTROL_STREAM_BLOCK` | Terminate the upgraded WebSocket stream |
+| `QCONTROL_STREAM_STATE(ptr)` | Attach or replace one upgraded-stream-scoped state pointer |
+
+### Mutable Message Buffer
+
+When `body` is non-`NULL`, use the regular buffer helpers to replace the logical message payload in place:
+
+| API | Description |
+|-----|-------------|
+| `qcontrol_buffer_set(body, bytes, len)` | Replace the entire logical payload |
+| `qcontrol_buffer_clear(body)` | Clear the current logical payload |
+
+qcontrol handles client masking and negotiated `permessage-deflate` before plugin callbacks, so plugins work with logical payload bytes rather than raw frames or compressed wire payloads.
+
+### WebSocket Rewrite Example
+
+```c
+static qcontrol_stream_action_t on_websocket_send(
+    void* state,
+    qcontrol_websocket_message_event_t* ev
+) {
+    (void)state;
+    if (ev->body != NULL) {
+        qcontrol_buffer_set(ev->body, "rewritten", 9);
+    }
+    return QCONTROL_STREAM_PASS;
+}
+```
+
 ## Building Plugins
 
 ### Project Setup
@@ -872,11 +1090,15 @@ clean:
 
 Plugins export a single `qcontrol_plugin` descriptor:
 
+The ABI version remains `1`; rebuild plugins against the current headers.
+The version does not detect incompatible binaries built against older headers.
+
 ```c
 #include <qcontrol.h>
 
-static int init(void) {
-    // Called on load
+static int init(const qcontrol_string_view_t* config, char* error, size_t error_cap) {
+    // Called once on load with the initial effective config
+    (void)config; (void)error; (void)error_cap;
     return 0;  // 0 = success
 }
 
@@ -892,7 +1114,7 @@ static qcontrol_file_action_t on_file_open(qcontrol_file_open_event_t* ev) {
 const qcontrol_plugin_t qcontrol_plugin = {
     .version = QCONTROL_PLUGIN_VERSION,
     .name = "my-plugin",
-    .on_init = init,                    // Optional
+    .on_init = init,                    // Optional: initial config
     .on_cleanup = cleanup,              // Optional
     // File callbacks (optional)
     .on_file_open = on_file_open,
@@ -924,6 +1146,15 @@ const qcontrol_plugin_t qcontrol_plugin = {
     .on_http_response_trailers = NULL,
     .on_http_response_done = NULL,
     .on_http_exchange_close = NULL,
+    // SSE callbacks (optional)
+    .on_sse_open = NULL,
+    .on_sse_event = NULL,
+    .on_sse_close = NULL,
+    // WebSocket callbacks (optional)
+    .on_websocket_open = NULL,
+    .on_websocket_send = NULL,
+    .on_websocket_recv = NULL,
+    .on_websocket_close = NULL,
 };
 ```
 
@@ -935,7 +1166,7 @@ All callbacks are optional. Only implement what you need.
 # Shared library for dynamic loading
 cc -shared -fPIC -o libmy_plugin.so my_plugin.c -I/path/to/sdk/include
 
-# Object file for bundling
+# Object file for static embedding or distribution-specific packaging
 cc -c -fPIC -o my_plugin.o my_plugin.c -I/path/to/sdk/include
 ```
 
@@ -943,56 +1174,22 @@ Output locations:
 - Shared library: `libmy_plugin.so`
 - Object file: `my_plugin.o`
 
-### Using Bundles
+## Running Plugins
 
-Bundle plugins directly from plugin directories:
+Run plugins by passing built shared libraries to `qcontrol run --plugins`:
 
 ```bash
-qcontrol bundle --plugins ./my-plugin -o my-plugin-bundle.so
-qcontrol wrap --bundle ./my-plugin-bundle.so -- ./target
+qcontrol run --plugins ./libmy_plugin.so -- ./target
 
 # Multiple plugins
-qcontrol bundle --plugins ./logger,./blocker -o my-plugins.so
-qcontrol wrap --bundle ./my-plugins.so -- ./target
+qcontrol run --plugins ./logger.so,./blocker.so -- ./target
 ```
 
-## Bundling Plugins
-
-For distribution, bundle plugins with the agent core into a single `.so` file.
-
-### Creating a Bundle
-
-Create the bundle directly from plugin directories:
+The lower-level hosts also honor `QCONTROL_PLUGINS` for comma-separated plugin
+library paths:
 
 ```bash
-qcontrol bundle --plugins ./file-logger,./access-control -o my-bundle.so
-```
-
-You can also pass prebuilt object files, or use a `bundle.toml` file when you want to describe larger bundles declaratively:
-
-```toml
-[bundle]
-output = "my-plugins.so"
-
-[[plugins]]
-source = "./file-logger"
-
-[[plugins]]
-source = "./access-control"
-```
-
-```bash
-qcontrol bundle --config bundle.toml
-```
-
-### Using Bundles
-
-```bash
-# Via command line flag
-qcontrol wrap --bundle my-bundle.so -- ./target
-
-# Via environment variable
-QCONTROL_BUNDLE=./my-bundle.so qcontrol wrap -- ./target
+QCONTROL_PLUGINS=./logger.so,./blocker.so qcontrol run -- ./target
 ```
 
 ## API Reference
@@ -1000,10 +1197,11 @@ QCONTROL_BUNDLE=./my-bundle.so qcontrol wrap -- ./target
 ### Plugin Lifecycle
 
 ```c
-static int init(void) {
-    // Called after plugin is loaded
+static int init(const qcontrol_string_view_t* config, char* error, size_t error_cap) {
+    // Called once after plugin is loaded, with the initial effective config
     // Initialize resources, open log files, etc.
-    return 0;  // Return 0 on success, non-zero on failure
+    (void)config; (void)error; (void)error_cap;
+    return 0;  // 0 = success, 1 = config invalid, other nonzero = failure
 }
 
 static void cleanup(void) {
@@ -1011,6 +1209,111 @@ static void cleanup(void) {
     // Clean up resources, close files, etc.
 }
 ```
+
+### Configuration
+
+Operators configure a plugin through the `config:` value on its behavior entry.
+Plugin-specific settings belong there, not in environment variables, and a
+plugin never sets process environment. Reference secrets by file path; never
+put a secret in config.
+
+#### Delivery
+
+`on_init` receives the initial effective config once, on the loading thread,
+before the plugin is published. `on_config` receives later updates only, never
+the initial config, and only for a plugin that initialized successfully. Both
+take a `qcontrol_string_view_t` plus a separate error buffer; neither receives
+a host handle or secret resolver. Leave `on_config` NULL to accept no updates.
+The host calls `on_config` when the configuration a running session started
+from is edited: each plugin gets its complete new effective config, or `null`
+once its entry is removed. Calls for one plugin never overlap, unchanged config
+is skipped, and only the newest pending update is delivered.
+
+Read exactly `config->len` bytes from `config->data`: NUL termination is not
+guaranteed. The view and its bytes are valid only during the call, so copy
+anything you keep. The contents are UTF-8 JSON and always either `null` (no
+config, never a NULL pointer) or a JSON object: the host rejects any other shape
+before loading, so a plugin does not check the shape itself. A plugin without
+`on_init` accepts only `null`.
+
+#### Schema
+
+The SDK does not parse JSON or choose a schema; parse the object with the JSON
+library of your choice. Give every field a default, and reject any key the
+plugin does not define, so a misspelled field is rejected instead of ignored.
+`null` selects the defaults. A plugin that needs `on_init` for setup but takes
+no settings accepts only `null` and an empty object.
+
+#### Lifecycle
+
+Use one parse-and-validate function for both callbacks, and build everything a
+config needs before it takes effect:
+
+1. Parse and validate the complete document.
+2. Open or start anything the new settings require.
+3. Publish the new settings; release what the previous settings held.
+
+A rejected update therefore changes nothing. A failing `on_init` owns its own
+unwind: the host does not call `on_cleanup` and never publishes the plugin.
+
+```c
+#include <qcontrol.h>
+#include <stdio.h>
+#include <string.h>
+
+/* Validate a complete document without touching active state. This plugin
+   takes no settings: only `null` and an empty object are accepted. */
+static int resolve(const qcontrol_string_view_t* config, char* error, size_t error_cap) {
+    if ((config->len == 4 && memcmp(config->data, "null", 4) == 0) ||
+        (config->len == 2 && memcmp(config->data, "{}", 2) == 0)) {
+        return QCONTROL_CONFIG_OK;
+    }
+    if (error != NULL && error_cap > 0) {
+        snprintf(error, error_cap, "config takes no fields");
+    }
+    return QCONTROL_CONFIG_INVALID;
+}
+
+static int init(const qcontrol_string_view_t* config, char* error, size_t error_cap) {
+    int status = resolve(config, error, error_cap);
+    /* Start resources and publish settings only after status is OK. */
+    return status;
+}
+
+static int on_config(const qcontrol_string_view_t* config,
+                     char* error, size_t error_cap) {
+    /* Prepare replacements, publish, then release the old ones. */
+    return resolve(config, error, error_cap);
+}
+```
+
+#### Applying settings
+
+By default each callback uses the settings in effect when it runs, so an
+accepted update applies from the next event. Pin settings to an operation
+instead only when one decision spans several callbacks (for example an HTTP
+request and its response), or when resources built from the settings must
+stay alive until the operation ends.
+
+#### Errors
+
+Return `QCONTROL_CONFIG_OK` (0) to accept, `QCONTROL_CONFIG_INVALID` (1) to
+reject the settings, or another nonzero value for a failure. To explain a
+failure, write a NUL-terminated reason into `error`, using at most `error_cap`
+bytes including the NUL. `error` may be NULL and `error_cap` may be 0, in which
+case write nothing. The host supplies a zeroed buffer (currently 1024 bytes),
+but its capacity is not an ABI promise; the host reads at most `error_cap`
+bytes and does not add a terminator.
+
+A reason names the field and the problem, never the value: config may hold
+paths or other sensitive text.
+
+#### Testing
+
+Unit-test updates by calling the exported callbacks directly. Cover accepted
+settings, each rejection, and that a rejected update leaves the previous
+settings in effect. An end-to-end check edits the session's configuration while
+the plugin runs; the host delivers the change through `on_config`.
 
 ### Logger Utility
 
@@ -1022,7 +1325,8 @@ Thread-safe file logger with reentrancy protection:
 
 QCONTROL_LOGGER(logger);
 
-static int init(void) {
+static int init(const qcontrol_string_view_t* config, char* error, size_t error_cap) {
+    (void)config; (void)error; (void)error_cap;  // this plugin takes no settings
     qcontrol_log_init(&logger, NULL);
     qcontrol_log(&logger, "[my-plugin] started\n");
     return 0;
@@ -1047,7 +1351,6 @@ The log file path is controlled by `QCONTROL_LOG_FILE` (default: `/tmp/qcontrol.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `QCONTROL_PLUGINS` | (none) | Comma-separated paths to plugin `.so` files |
-| `QCONTROL_BUNDLE` | (none) | Path to bundled plugin `.so` file |
 | `QCONTROL_LOG_FILE` | `/tmp/qcontrol.log` | Log file path for Logger utility |
 
 ## License

@@ -10,10 +10,10 @@
  *
  * Build:
  *   make build   # Build shared library for dynamic loading
- *   make dist    # Build object file for bundling
+ *   make dist    # Build object file for static embedding or packaging
  *
  * Usage:
- *   QCONTROL_PLUGINS=./dist/access-control-<arch>.so qcontrol wrap -- ./target
+ *   QCONTROL_PLUGINS=./dist/access-control-<arch>.so qcontrol run -- ./target
  */
 
 #include <qcontrol.h>
@@ -42,7 +42,11 @@ static qcontrol_file_action_t on_file_open(qcontrol_file_open_event_t* ev) {
 /**
  * Plugin initialization - called when the plugin is loaded.
  */
-static int plugin_init(void) {
+static int plugin_init(const qcontrol_string_view_t *config, char *error,
+    size_t error_cap) {
+    (void)config;
+    (void)error;
+    (void)error_cap;
     qcontrol_log_init(&logger, NULL);
     qcontrol_log(&logger, "[access_control] initializing - blocking /tmp/secret*\n");
     return 0;

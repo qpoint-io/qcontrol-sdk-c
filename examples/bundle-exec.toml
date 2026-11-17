@@ -1,5 +1,0 @@
-[bundle]
-output = "c-exec-plugins.so"
-
-[[plugins]]
-source = "./exec-logger"

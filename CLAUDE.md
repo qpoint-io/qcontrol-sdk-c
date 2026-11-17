@@ -1,7 +1,6 @@
 # qcontrol C SDK Guidelines
 
 ## Build Commands
-- `make deps` - Download Frida devkits
 - `make build` - Build the SDK
 - `make clean` - Clean build artifacts
 - `cd examples && make dev` - Start dev container with tools pre-installed

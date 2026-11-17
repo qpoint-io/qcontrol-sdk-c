@@ -11,10 +11,10 @@
  *
  * Build:
  *   make build   # Build shared library for dynamic loading
- *   make dist    # Build object file for bundling
+ *   make dist    # Build object file for static embedding or packaging
  *
  * Usage:
- *   QCONTROL_PLUGINS=./dist/file-logger-<arch>.so qcontrol wrap -- ./target
+ *   QCONTROL_PLUGINS=./dist/file-logger-<arch>.so qcontrol run -- ./target
  */
 
 #include <qcontrol.h>
@@ -69,7 +69,11 @@ static void on_file_close(void* state, qcontrol_file_close_event_t* ev) {
 /**
  * Plugin initialization - called when the plugin is loaded.
  */
-static int plugin_init(void) {
+static int plugin_init(const qcontrol_string_view_t *config, char *error,
+    size_t error_cap) {
+    (void)config;
+    (void)error;
+    (void)error_cap;
     qcontrol_log_init(&logger, NULL);
     qcontrol_log(&logger, "[file_logger] initializing...\n");
     return 0;

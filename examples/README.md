@@ -17,22 +17,41 @@ HTTP interception.
 | net-transform | Rewrites plaintext network traffic with declarative recv transforms |
 | http-logger | Logs structured HTTP request/response lifecycle events |
 | http-rewrite | Rewrites one JSON response body with buffered-body scheduling |
+| sse-rewrite | Rewrites parsed SSE event fields inside one event stream |
+| websocket-rewrite | Rewrites logical WebSocket text messages after upgrade |
+
+## SSE and WebSocket Notes
+
+The C SDK also exposes derived stream callback families for:
+
+- `qcontrol_sse_open_fn`, `qcontrol_sse_event_fn`, `qcontrol_sse_close_fn`
+- `qcontrol_websocket_open_fn`, `qcontrol_websocket_send_fn`,
+  `qcontrol_websocket_recv_fn`, `qcontrol_websocket_close_fn`
+
+Both families share `qcontrol_stream_ctx_t` so plugins can correlate back to:
+
+- `connection_id`
+- `exchange_id`
+
+Use `QCONTROL_STREAM_PASS`, `QCONTROL_STREAM_BLOCK`, and
+`QCONTROL_STREAM_STATE(...)` from `qcontrol/stream.h` for callback results.
+
+Example plugins in this directory:
+
+- `sse-rewrite` illustrates parsed SSE event mutation through `event_handle`
+- `websocket-rewrite` illustrates logical message mutation through
+  `qcontrol_buffer_t* body`
 
 ## Quick Start
 
 ```bash
-make                  # Build all plugins into c-plugins.so
-qcontrol wrap --bundle ./c-plugins.so -- ./your-app
+make                  # Build all example plugins
+qcontrol run --plugins ./file-logger/dist/file-logger-$(uname -m | sed 's/^arm64$/aarch64/')-$(uname -s | tr A-Z a-z | sed 's/^darwin$/macos/').dylib -- ./your-app
 ```
 
 Type-specific shortcuts are also available:
 
 ```bash
-make bundle-file      # c-file-plugins.so
-make bundle-exec      # c-exec-plugins.so
-make bundle-net       # c-net-plugins.so
-make bundle-http      # c-http-plugins.so
-
 make build-file       # shared libraries for file plugins
 make build-exec       # shared libraries for exec plugins
 make build-net        # shared libraries for net plugins
@@ -73,7 +92,7 @@ echo "super_secret_key_123" > /tmp/secret_api_key.txt
 
 Launch the standard `cat` utility, but wrap it in qcontrol's access-control policy:
 ```bash
-qcontrol wrap --bundle ./c-plugins.so -- cat /tmp/secret_api_key.txt
+qcontrol run --plugins ./access-control/dist/access-control-$(uname -m | sed 's/^arm64$/aarch64/')-$(uname -s | tr A-Z a-z | sed 's/^darwin$/macos/').dylib -- cat /tmp/secret_api_key.txt
 ```
 
 **What Happens:**
@@ -101,7 +120,7 @@ If you have an Anthropic Console account, you can try sandboxing the AI:
 claude auth login
 
 # 2. Command the AI to read the secret file, but wrap it in our policy
-qcontrol wrap --bundle ./c-plugins.so -- claude -p "Read /tmp/secret_api_key.txt and summarize its contents."
+qcontrol run --plugins ./access-control/dist/access-control-$(uname -m | sed 's/^arm64$/aarch64/')-$(uname -s | tr A-Z a-z | sed 's/^darwin$/macos/').dylib -- claude -p "Read /tmp/secret_api_key.txt and summarize its contents."
 ```
 
 Claude will hit the system-level block, realize it is sandboxed, and gracefully respond: *"I cannot complete this request because I received a permission denied error trying to read the file."*
@@ -110,7 +129,7 @@ Claude will hit the system-level block, realize it is sandboxed, and gracefully 
 
 ```bash
 # Run the test script with plugins
-qcontrol wrap --bundle ./c-plugins.so -- ./test-file-ops.sh
+qcontrol run --plugins ./file-logger/dist/file-logger-$(uname -m | sed 's/^arm64$/aarch64/')-$(uname -s | tr A-Z a-z | sed 's/^darwin$/macos/').dylib,./access-control/dist/access-control-$(uname -m | sed 's/^arm64$/aarch64/')-$(uname -s | tr A-Z a-z | sed 's/^darwin$/macos/').dylib -- ./test-file-ops.sh
 
 # Check log output
 cat /tmp/qcontrol.log
@@ -118,11 +137,11 @@ cat /tmp/qcontrol.log
 
 ### Network Demo
 
-Bundle the network logger example and make an HTTPS request through `wrap`:
+Build the network logger example and make an HTTPS request through `qcontrol run`:
 
 ```bash
-qcontrol bundle --plugins ./net-logger -o ./net-logger-demo.so
-qcontrol wrap --bundle ./net-logger-demo.so -- ./test-net-io.sh https://example.com/
+make build-net
+qcontrol run --plugins ./net-logger/dist/net-logger-$(uname -m | sed 's/^arm64$/aarch64/')-$(uname -s | tr A-Z a-z | sed 's/^darwin$/macos/').dylib -- ./test-net-io.sh https://example.com/
 ```
 
 Then inspect the log:
@@ -135,11 +154,11 @@ You should see entries for `connect`, `domain`, `protocol`, `send`, `recv`, and 
 
 ### Network Transform Demo
 
-Bundle the transform example and run it against a local HTTP server:
+Build the transform example and run it against a local HTTP server:
 
 ```bash
-qcontrol bundle --plugins ./net-transform -o ./net-transform-demo.so
-qcontrol wrap --bundle ./net-transform-demo.so -- ./test-net-transform.sh
+make build-net
+qcontrol run --plugins ./net-transform/dist/net-transform-$(uname -m | sed 's/^arm64$/aarch64/')-$(uname -s | tr A-Z a-z | sed 's/^darwin$/macos/').dylib -- ./test-net-transform.sh
 ```
 
 You should see the body rewritten from:
@@ -202,17 +221,3 @@ QCONTROL_PLUGIN("my_plugin",
 ```
 
 Build: `gcc -shared -fPIC -o plugin.so plugin.c -I../../include`
-
-## Advanced: Bundling Individual Plugins
-
-For development, you can bundle just the plugins you want without writing a `bundle.toml` file:
-
-```bash
-# Bundle one plugin
-qcontrol bundle --plugins ./file-logger -o ./file-logger.so
-qcontrol wrap --bundle ./file-logger.so -- ls -la
-
-# Bundle multiple plugins
-qcontrol bundle --plugins ./file-logger,./access-control -o ./file-tools.so
-qcontrol wrap --bundle ./file-tools.so -- cat /tmp/secret_test.txt
-```
