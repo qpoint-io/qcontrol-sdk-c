@@ -175,8 +175,9 @@ typedef struct {
 
     /* === NETSTAT (optional) === */
     /**
-     * Called with one read-only snapshot. The pointer is valid only for
-     * the call. A null callback skips the plugin.
+     * Called with a batch of netstat events. The pointer is valid only
+     * for the call; the count is never zero. A null callback skips the
+     * plugin.
      */
     qcontrol_netstat_fn on_netstat;
 
