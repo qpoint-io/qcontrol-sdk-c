@@ -4,9 +4,9 @@
 #
 # Run this script through `qcontrol run`, similar to test-file-ops.sh:
 #
-#   qcontrol run --plugins ./net-logger/dist/net-logger-<arch>.<ext> -- ./test-net-io.sh
+#   qcontrol run --config ./plugins.yaml --behavior net-logger -- ./test-net-io.sh
 #
-#   qcontrol run --plugins ./net-logger/dist/net-logger-<arch>.<ext> -- ./test-net-io.sh https://example.com/
+#   qcontrol run --config ./plugins.yaml --behavior net-logger -- ./test-net-io.sh https://example.com/
 #
 
 set -euo pipefail

@@ -18,8 +18,8 @@
  *   make build   # Build shared library for dynamic loading
  *   make dist    # Build object file for static embedding or packaging
  *
- * Usage:
- *   qcontrol run --plugins ./dist/net-logger-<arch>.so -- ./target
+ * Usage (the examples README shows how to generate plugins.yaml):
+ *   qcontrol run --config ./plugins.yaml --behavior net-logger -- ./target
  */
 
 #include <qcontrol.h>

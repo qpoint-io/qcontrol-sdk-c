@@ -62,10 +62,26 @@ const qcontrol_plugin_t qcontrol_plugin = {
 ```
 
 Build a shared library using the Makefile pattern shown in
-[Building Plugins](#building-plugins), then pass it to `qcontrol run`:
+[Building Plugins](#building-plugins), then list it in a behavior's `plugins`
+in `config.yaml`:
+
+```yaml
+behaviors:
+  hello:
+    file:
+      enabled: true
+    plugins:
+      - name: hello-plugin
+        path: /absolute/path/to/libhello_plugin.so
+```
+
+A behavior that loads a path plugin states the surfaces it uses; this plugin
+hooks file opens, so the behavior sets `file.enabled`.
+
+Select that behavior when you run a command:
 
 ```bash
-qcontrol run --plugins ./libhello_plugin.so -- cat /etc/passwd
+qcontrol run --behavior hello -- cat /etc/passwd
 ```
 
 That's it. Your plugin now intercepts every file open in the instrumented
@@ -1176,13 +1192,19 @@ Output locations:
 
 ## Running Plugins
 
-Run plugins by passing built shared libraries to `qcontrol run --plugins`:
+List built shared libraries by `name` and `path` under a behavior's `plugins`
+in `config.yaml`, then select the behavior with `qcontrol run --behavior`:
+
+```yaml
+behaviors:
+  my-plugins:
+    plugins:
+      - name: my-plugin
+        path: /absolute/path/to/libmy_plugin.so
+```
 
 ```bash
-qcontrol run --plugins ./libmy_plugin.so -- ./target
-
-# Multiple plugins
-qcontrol run --plugins ./logger.so,./blocker.so -- ./target
+qcontrol run --behavior my-plugins -- ./target
 ```
 
 The lower-level hosts also honor `QCONTROL_PLUGINS` for comma-separated plugin

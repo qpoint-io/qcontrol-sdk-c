@@ -4,7 +4,7 @@
 #
 # Run this script through `qcontrol run`:
 #
-#   qcontrol run --plugins ./net-transform/dist/net-transform-<arch>.<ext> -- ./test-net-transform.sh
+#   qcontrol run --config ./plugins.yaml --behavior net-transform -- ./test-net-transform.sh
 #
 
 set -euo pipefail

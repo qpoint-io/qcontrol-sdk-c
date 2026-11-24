@@ -20,14 +20,16 @@
     make build-exec              # exec plugin shared libraries
     make build-net               # net plugin shared libraries
 
-  Run a command with qcontrol instrumentation:
+  Run a command with qcontrol instrumentation (list a built plugin under a
+  behavior's `plugins` in config.yaml; its `path` must be absolute):
 
-    qcontrol run --plugins <plugin.so> -- <command>
+    qcontrol run --config <config.yaml> --behavior <behavior> -- <command>
 
-  Example - instrument 'cat' with a built plugin:
+  Example - instrument 'cat' with a built plugin (README.md shows how to
+  generate the plugins.yaml it uses):
 
     cd examples
-    qcontrol run --plugins ./file-logger/dist/file-logger-<arch>.<ext> -- cat /etc/hostname
+    qcontrol run --config ./plugins.yaml --behavior file-logger -- cat /etc/hostname
 
   Useful commands:
 

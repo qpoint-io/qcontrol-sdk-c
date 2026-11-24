@@ -44,9 +44,39 @@ Example plugins in this directory:
 
 ## Quick Start
 
+Plugins load through behaviors in `config.yaml`, and a plugin `path` must be
+absolute. A behavior that loads a path plugin states the surfaces it uses, so
+each generated behavior enables the surface its example hooks. A builtin name
+cannot take a `path`, so each plugin entry is named `<example>-local`. Build
+the examples, then generate a config with one behavior per built plugin, named
+after it:
+
 ```bash
 make                  # Build all example plugins
-qcontrol run --plugins ./file-logger/dist/file-logger-$(uname -m | sed 's/^arm64$/aarch64/')-$(uname -s | tr A-Z a-z | sed 's/^darwin$/macos/').dylib -- ./your-app
+
+arch="$(uname -m | sed 's/^arm64$/aarch64/')-$(uname -s | tr A-Z a-z | sed 's/^darwin$/macos/')"
+ext="$(if [ "$(uname -s)" = Darwin ]; then echo dylib; else echo so; fi)"
+{
+  echo "behaviors:"
+  for dist in */dist; do
+    name="${dist%/dist}"
+    case "$name" in
+      exec-*)    surface=exec ;;
+      netstat-*) surface=netstat ;;
+      net-*|http-*|sse-*|websocket-*) surface=network ;;
+      *)         surface=file ;;
+    esac
+    printf '  %s:\n    %s:\n      enabled: true\n    plugins:\n      - name: %s-local\n        path: %s\n' \
+      "$name" "$surface" "$name" "$PWD/$dist/$name-$arch.$ext"
+  done
+} > plugins.yaml
+```
+
+Select a behavior with `--behavior`; name several, comma-separated, to load
+several plugins:
+
+```bash
+qcontrol run --config ./plugins.yaml --behavior file-logger -- ./your-app
 ```
 
 Type-specific shortcuts are also available:
@@ -92,7 +122,7 @@ echo "super_secret_key_123" > /tmp/secret_api_key.txt
 
 Launch the standard `cat` utility, but wrap it in qcontrol's access-control policy:
 ```bash
-qcontrol run --plugins ./access-control/dist/access-control-$(uname -m | sed 's/^arm64$/aarch64/')-$(uname -s | tr A-Z a-z | sed 's/^darwin$/macos/').dylib -- cat /tmp/secret_api_key.txt
+qcontrol run --config ./plugins.yaml --behavior access-control -- cat /tmp/secret_api_key.txt
 ```
 
 **What Happens:**
@@ -120,7 +150,7 @@ If you have an Anthropic Console account, you can try sandboxing the AI:
 claude auth login
 
 # 2. Command the AI to read the secret file, but wrap it in our policy
-qcontrol run --plugins ./access-control/dist/access-control-$(uname -m | sed 's/^arm64$/aarch64/')-$(uname -s | tr A-Z a-z | sed 's/^darwin$/macos/').dylib -- claude -p "Read /tmp/secret_api_key.txt and summarize its contents."
+qcontrol run --config ./plugins.yaml --behavior access-control -- claude -p "Read /tmp/secret_api_key.txt and summarize its contents."
 ```
 
 Claude will hit the system-level block, realize it is sandboxed, and gracefully respond: *"I cannot complete this request because I received a permission denied error trying to read the file."*
@@ -129,7 +159,7 @@ Claude will hit the system-level block, realize it is sandboxed, and gracefully 
 
 ```bash
 # Run the test script with plugins
-qcontrol run --plugins ./file-logger/dist/file-logger-$(uname -m | sed 's/^arm64$/aarch64/')-$(uname -s | tr A-Z a-z | sed 's/^darwin$/macos/').dylib,./access-control/dist/access-control-$(uname -m | sed 's/^arm64$/aarch64/')-$(uname -s | tr A-Z a-z | sed 's/^darwin$/macos/').dylib -- ./test-file-ops.sh
+qcontrol run --config ./plugins.yaml --behavior file-logger,access-control -- ./test-file-ops.sh
 
 # Check log output
 cat /tmp/qcontrol.log
@@ -141,7 +171,7 @@ Build the network logger example and make an HTTPS request through `qcontrol run
 
 ```bash
 make build-net
-qcontrol run --plugins ./net-logger/dist/net-logger-$(uname -m | sed 's/^arm64$/aarch64/')-$(uname -s | tr A-Z a-z | sed 's/^darwin$/macos/').dylib -- ./test-net-io.sh https://example.com/
+qcontrol run --config ./plugins.yaml --behavior net-logger -- ./test-net-io.sh https://example.com/
 ```
 
 Then inspect the log:
@@ -158,7 +188,7 @@ Build the transform example and run it against a local HTTP server:
 
 ```bash
 make build-net
-qcontrol run --plugins ./net-transform/dist/net-transform-$(uname -m | sed 's/^arm64$/aarch64/')-$(uname -s | tr A-Z a-z | sed 's/^darwin$/macos/').dylib -- ./test-net-transform.sh
+qcontrol run --config ./plugins.yaml --behavior net-transform -- ./test-net-transform.sh
 ```
 
 You should see the body rewritten from:
